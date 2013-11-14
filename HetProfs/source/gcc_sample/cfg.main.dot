@@ -1,0 +1,12 @@
+digraph "CFG for 'main' function" {
+	label="CFG for 'main' function";
+
+	Node0x32deeb0 [shape=record,label="{entry:\l  %retval = alloca i32, align 4\l  %a = alloca i32, align 4\l  store i32 0, i32* %retval\l  store i32 2, i32* %a, align 4\l  %0 = load i32* %a, align 4\l  %cmp = icmp eq i32 %0, 1\l  br i1 %cmp, label %if.then, label %if.else\l|{<s0>T|<s1>F}}"];
+	Node0x32deeb0:s0 -> Node0x32dfd60;
+	Node0x32deeb0:s1 -> Node0x32dfdc0;
+	Node0x32dfd60 [shape=record,label="{if.then:                                          \l  %1 = load i32* %a, align 4\l  %inc = add nsw i32 %1, 1\l  store i32 %inc, i32* %a, align 4\l  store i32 0, i32* %retval\l  br label %return\l}"];
+	Node0x32dfd60 -> Node0x32dfe20;
+	Node0x32dfdc0 [shape=record,label="{if.else:                                          \l  %2 = load i32* %a, align 4\l  %add = add nsw i32 %2, 2\l  store i32 %add, i32* %a, align 4\l  %call = call i32 (i8*, ...)* @printf(i8* getelementptr inbounds ([6 x i8]* @.str, i32 0, i32 0))\l  store i32 1, i32* %retval\l  br label %return\l}"];
+	Node0x32dfdc0 -> Node0x32dfe20;
+	Node0x32dfe20 [shape=record,label="{return:                                           \l  %3 = load i32* %retval\l  ret i32 %3\l}"];
+}
