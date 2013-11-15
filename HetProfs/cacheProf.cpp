@@ -75,10 +75,10 @@ struct cacheProf : public ModulePass {
            	strcat(bb_file_path, bb_file_name);
 						bb_file.open(bb_file_path, ios::in);
 
-					/* 
- 				 	 * Read file and make a map of BasicBlock sizes
-				 	 * of the form {<Function, Basic Block>, <Size, Starting address>}
-				 	 */
+				/* 
+ 				 * Read file and make a map of BasicBlock sizes
+				 * of the form {<Function, Basic Block>, <Size, Starting address>}
+				 */
 				if(bb_file.is_open()) {
 					while(getline(bb_file, line)) {
 						std::stringstream linestream(line);
@@ -100,10 +100,10 @@ struct cacheProf : public ModulePass {
 			}		
 		}
 		
-		/*virtual void getAnalysisUsage(AnalysisUsage &A) const {
+		virtual void getAnalysisUsage(AnalysisUsage &A) const {
 			A.addPreserved<UnifyFunctionExitNodes>();
 			A.addRequired<UnifyFunctionExitNodes>();
-		}*/
+		}
 		
 		public:
 		virtual bool runOnModule(Module &M){
@@ -111,12 +111,32 @@ struct cacheProf : public ModulePass {
 			LLVMContext& context = M.getContext();
 			Constant *branchHookFunc, *dcacheHookFunc, *MLPHookFunc, *icacheHookFunc;
 			Constant *branchPrintHookFunc;
+			/*
+			 * External function for branch profiling
+			 * Arguments - Instruction ID, Taken branch target ID
+			 * Return type - Void
+			 */
+			branchHookFunc = M.getOrInsertFunction("branchCounter",
+													Type::getVoidTy(context),
+													llvm::Type::getInt32Ty(context),
+													llvm::Type::getInt32Ty(context),
+													llvm::Type::getInt32Ty(context),
+													(Type*)0);
+     		branchCounter= cast<Function>(branchHookFunc);
+	
+			branchPrintHookFunc = M.getOrInsertFunction("branchPrinter",
+														Type::getVoidTy(context),
+														(Type*)0);
+     		branchPrinter = cast<Function>(branchPrintHookFunc);
+			
+
 			/* 
  			 * External function for data cache profiling
 			 * Arguments - Instruction ID, Memory address
 			 * Return type - Void
 			 */
-	    	/*dcacheHookFunc = M.getOrInsertFunction("dCacheCounter",
+	    	
+			/*dcacheHookFunc = M.getOrInsertFunction("dCacheCounter",
 													Type::getVoidTy(context),
                                                		llvm::Type::getInt32Ty(context),
                                                		llvm::Type::getInt32Ty(context),
@@ -139,23 +159,6 @@ struct cacheProf : public ModulePass {
 
 			*/
 			/*
-			 * External function for branch profiling
-			 * Arguments - Instruction ID, Taken branch target ID
-			 * Return type - Void
-			 */
-			branchHookFunc = M.getOrInsertFunction("branchCounter",
-													Type::getVoidTy(context),
-													llvm::Type::getInt32Ty(context),
-													llvm::Type::getInt32Ty(context),
-													llvm::Type::getInt32Ty(context),
-													(Type*)0);
-     		branchCounter= cast<Function>(branchHookFunc);
-	
-			/*branchPrintHookFunc = M.getOrInsertFunction("branchPrinter",
-														(Type*)0);
-     		branchPrinter = cast<Function>(branchPrintHookFunc);
-			*/
-			/*
  			 * External function for MLP
  			 * Arguments - 
  			 * Return type - Void
@@ -167,46 +170,68 @@ struct cacheProf : public ModulePass {
 												(Type*)0);
 			MLPCounter = cast<Function>(MLPHookFunc);
 			*/
+
+
       		// Iterating through all BB and profiling them
      		for(Module::iterator F = M.begin(), E = M.end(); F!= E; ++F) {
 				string func_name = (F->hasName())? (F->getName()).str(): "";
-				/*Function *func = &*F;
-				if(! func->isDeclaration()) {
+				string ret_bb_name;
+				Function *func = &*F;
+				TerminatorInst *termI = NULL;
+	
+				// errs()<<func_name<<"\n";	
+				// Get the return block for this function
+				if((func_name.compare("main")  == 0) && !func->isDeclaration()) {
 					UEN= &getAnalysis<UnifyFunctionExitNodes>(*func);
-					//errs()<<func->getName().str()<< " " << UEN->getReturnBlock()->getName().str()<<"\n";
-				}*/
-				/*
- 				 * Iterate through all the basic blocks and profile them
- 				 */
+					if (UEN != NULL && UEN->getReturnBlock() != NULL) {
+						ret_bb_name = UEN->getReturnBlock()->hasName() ? 
+										UEN->getReturnBlock()->getName().str() : "";
+						termI = UEN->getReturnBlock()->getTerminator();
+					}
+				}
+				
+ 				// Iterate through all the basic blocks and profile them
 				for(Function::iterator BB = F->begin(), E = F->end(); BB != E; 
 					++BB) {
+				
 					bb_id++;
 				
 					// Insert this basic block in the BB-ID map
-					string bb_name = (BB->hasName())? (BB->getName()).str(): "";
+					string bb_name = (BB->hasName()) ? (BB->getName()).str(): "";
 					std::pair<string, string> func_bb = make_pair(func_name, 
-																				 bb_name);
+																  bb_name);
 					bb_id_map.insert(std::pair<std::pair<string, string>, int>(
 						func_bb, bb_id));
-					
-					//errs()<<"Calling branch profiling for " << func_name << bb_name;
-					/*
- 					 * Profiling of the basic block starts here
- 					 */
 
-					// Instruction cache profiling
-					/*cacheProf::inst_addr_profiling(bb_id, 
-													BB,
-													icacheHookFunc, 
-													context);
-					*/
 					// Branch profiling
 					cacheProf::branch_profiling(bb_id, BB, branchHookFunc, context);
+					
+					if ((func_name.compare("main") == 0) && (bb_name.compare(ret_bb_name)== 0)) {
+						std::vector<Value*> Args(0);
+						if (termI != NULL) {
+							errs() << "branchPrinter will be called" << "\n";
+							CallInst::Create(branchPrinter, Args, "", termI);
+						}
+					}
 					
 					// Data cache profiling
 					// cacheProf::cache_profiling(bb_id, BB, cacheHookFunc, context);
 					// cacheProf::mlp_profiling(bb_id, BB, dcacheHookFunc, context);
-					}
+					// Instruction cache profiling
+					// cacheProf::inst_addr_profiling(bb_id, BB, icacheHookFunc, context);
+
+					// Get the size of the basic block and starting address
+					/*BBlk bb_list_key = make_pair(func_name, 
+							 				 bb_name);
+				std::map<std::pair<std::string, std::string>, 
+						std::pair<int,int> >::iterator map_it;
+				map_it = bb_size_map.find(bb_list_key);
+		
+				if(map_it != bb_size_map.end()){
+					std::pair<int, int>bb_add = map_it->second;
+				}*/
+
+				}
      		}
         return false;
 		}
@@ -456,7 +481,6 @@ struct cacheProf : public ModulePass {
 		}
 
 
-			
 
 	};
 }       
