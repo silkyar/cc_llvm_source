@@ -1,3 +1,4 @@
+#include <fstream>
 #include <iostream>
 #include <sys/types.h>
 #include <inttypes.h>
@@ -7,10 +8,10 @@
 #include <set>
 #define _STDC_FORMAT_MACROS
 
-#define dMap1MaxSize 1000
-#define dMap2MaxSize 10000
-#define iMap1MaxSize 1000
-#define iMap2MaxSize 10000
+#define dMap1MaxSize 512
+#define dMap2MaxSize 4096
+#define iMap1MaxSize 512
+#define iMap2MaxSize 4096
 
 #define OFFCHIP_LATENCY 60
 using namespace std;
@@ -42,15 +43,17 @@ typedef std::list< EntryPair > CacheList;
 typedef std::map< uint32_t, CacheList::iterator > CacheMap;
 
 //Map<Memory address, No.of L1 misses>
-typedef std::map<uint32_t, uint32_t> CacheMissMap;
+typedef std::map<uint32_t, std::pair<uint32_t, uint32_t> > CacheMissMap;
 
 //Map<Branch ID, mispredict count>
 typedef std::map<uint32_t, uint32_t> BranchMisMap;
-typedef std::map<uint32_t, uint32_t> BBBranchMisMap;
+typedef std::map<uint32_t, std::pair<uint32_t, uint32_t> > BBBranchMisMap;
 
 // Branch mispredict counter per basic block
-BBBranchMisMap *bb_br_mispr_map = new std::map<uint32_t, uint32_t>(); 
+BBBranchMisMap *bb_br_mispr_map = new std::map<uint32_t, std::pair<uint32_t, uint32_t> >(); 
 
+void print_miss_maps();
+void print_miss_map(CacheMissMap* miss_map, string type);
 
 class MLPTuple {
 	public:
@@ -83,7 +86,7 @@ class dcache{
 	static CacheList *mcache2List;
 	static CacheMissMap *L1miss_map;
 	static CacheMissMap *L2miss_map;
-	static  MLPBuffer *mlp_buffer;
+	static MLPBuffer *mlp_buffer;
 
 	int getLastSeqNum() {
 		return last_seq_num;
@@ -96,34 +99,33 @@ class dcache{
 };
 
 class icache{
-
 	public:
-	static CacheMap *mcache1Map;
-	static CacheMap *mcache2Map;
-	static CacheList *mcache1List;
-	static CacheList *mcache2List;
-	static CacheMissMap *L1miss_map;
-	static CacheMissMap *L2miss_map;
-
+		static CacheMap *mcache1Map;
+		static CacheMap *mcache2Map;
+		static CacheList *mcache1List;
+		static CacheList *mcache2List;
+		static CacheMissMap *L1miss_map;
+		static CacheMissMap *L2miss_map;
 };
 
 /*
  * Method declarations
  */
 
-void update_br_mispredict(BBBranchMisMap*, BranchMisMap*, uint32_t, uint32_t);
+void update_br_mispredict(BBBranchMisMap*, BranchMisMap*, uint32_t, uint32_t, int);
 int  do_cache(CacheMap *mcache1Map, 
-				  CacheMap *mcache2Map, 
-				  CacheList *mcache1List,
-				  CacheList *mcache2List,
-				  CacheMissMap *L1miss_map,
-				  CacheMissMap *L2miss_map,
-				  int maxL1Size,
-				  int maxL2Size,
-				  uint32_t instID, 
-				  uint32_t addr);
+				CacheMap *mcache2Map, 
+		 		CacheList *mcache1List,
+				CacheList *mcache2List,
+				CacheMissMap *L1miss_map,
+				CacheMissMap *L2miss_map,
+		 		int maxL1Size,
+				int maxL2Size,
+		 		uint32_t instID, 
+			 	uint32_t addr,
+				uint32_t bb_id);
 
-void update_miss_map(CacheMissMap*, uint32_t );
+void update_miss_map(CacheMissMap*, uint32_t, int );
 bool isfullL1(int);
 bool isfullL2(int);
 void insertInL1(CacheMap*, CacheList*, int, uint32_t, uint32_t);
@@ -138,8 +140,8 @@ CacheMap* dcache::mcache1Map = new std::map<uint32_t, CacheList::iterator>();
 CacheMap* dcache::mcache2Map = new std::map<uint32_t, CacheList::iterator>();
 CacheList* dcache::mcache1List = new std::list< EntryPair>();
 CacheList* dcache::mcache2List = new std::list< EntryPair>();
-CacheMissMap* dcache::L1miss_map = new std::map<uint32_t, uint32_t>();
-CacheMissMap* dcache::L2miss_map = new std::map<uint32_t, uint32_t>();
+CacheMissMap* dcache::L1miss_map = new std::map<uint32_t, std::pair<uint32_t, uint32_t> >();
+CacheMissMap* dcache::L2miss_map = new std::map<uint32_t, std::pair<uint32_t, uint32_t> >();
 MLPBuffer* dcache::mlp_buffer = new std::map<uint32_t, std::list<MLPTuple> >();
 int dcache::last_seq_num = 0;
 
@@ -147,14 +149,30 @@ CacheMap*  icache::mcache1Map = new std::map<uint32_t, CacheList::iterator>();
 CacheMap* icache::mcache2Map = new std::map<uint32_t, CacheList::iterator>();
 CacheList* icache::mcache1List = new std::list< EntryPair>();
 CacheList* icache::mcache2List = new std::list< EntryPair>();
-CacheMissMap* icache::L1miss_map = new std::map<uint32_t, uint32_t>();
-CacheMissMap* icache::L2miss_map = new std::map<uint32_t, uint32_t>();
+CacheMissMap* icache::L1miss_map = new std::map<uint32_t, std::pair<uint32_t, uint32_t> >();
+CacheMissMap* icache::L2miss_map = new std::map<uint32_t, std::pair<uint32_t, uint32_t> >();
 
-extern "C" void dCacheCounter(int bb_id,
-								unsigned id, 
-								int seq_num,
+std::list<std::vector<int> > *mlp_list = new std::list<std::vector<int> >;
+
+int get_num_misses_in_BB(int bb_id, CacheMissMap* miss_map) {
+	
+	if(miss_map->find(bb_id) != miss_map->end()){
+		cout << "BB miss "<< bb_id << " " <<((*miss_map)[bb_id]).first << "\n";
+		return ((*miss_map)[bb_id]).first;
+	}
+	return 0;
+}
+
+extern "C" void dCacheCounter(  const uint32_t bb_id,
+								const uint32_t inst_id, 
 								const uint64_t addr) {
 		
+	ofstream mlp_check_file;
+	mlp_check_file.open("mlp_check.txt", ios::app);
+
+	std::list<std::vector<int> >:: iterator mlp_it;
+	bool exists = false;
+	uint64_t block_addr = addr & ~(0x3F);
 	if(do_cache(dcache::mcache1Map, 
 				dcache::mcache2Map,
 	 			dcache::mcache1List, 
@@ -163,52 +181,76 @@ extern "C" void dCacheCounter(int bb_id,
 				dcache::L2miss_map,
 				dMap1MaxSize,
 				dMap2MaxSize,
-				id, 
-				addr) == false) {
-		
-	/*
- 	 * Candidate for MLP
- 	 * Subtract relative seq_num from all LDs
- 	 * Add 1 to MLP of all LDs with non-zero wait_inst_count
- 	 */
-	
-	//int num_inst_executed = seq_num - dcache::getLastSeqNum();
-
-	/*std::map<int, MLPTuple
-	MLPTuple tmpMLPTuple(id);
-	dcache::mlp_buffer[id].append(tmp);
-	*/
-	
+				inst_id, 
+				block_addr,
+				bb_id) == false) {
+		mlp_check_file << bb_id << "  " << addr << " " << block_addr << "\n";
+					
+		mlp_it = mlp_list->begin();
+		// Increase everyone's MLP
+		while(mlp_it != mlp_list->end()) {
+			if((*mlp_it)[0] == bb_id) {
+				exists = true;
+			}
+			(*mlp_it)[1] = (*mlp_it)[1] + 1;
+			mlp_it++;
+		}
+		// If the BB doesn't already exist
+		if(exists == false) {
+			std::vector<int> v;
+			v.push_back(bb_id);
+			v.push_back(0);
+			v.push_back(80);
+			mlp_list->push_back(v);
+		}
 	}
 	return;
 }
 
-extern "C" void MLPCounter(int bb_id,
-								   int num_insts) {
+extern "C" void MLPCounter(uint32_t bb_id,
+						   uint32_t num_insts) {
+
+	std::list<std::vector<int> >:: iterator mlp_it;
+	ofstream mlp_file;
+	bool bb_exists = false;
+
+	mlp_file.open("mlp.txt", ios::app);
+
+	mlp_it = mlp_list->begin();
+	while(mlp_it != mlp_list->end()) {
+		// Substract the number of instructions executed
+		(*mlp_it)[2] = (*mlp_it)[2] - num_insts;
 	
-	/*
- 	 * Subtract num_insts from all LDs in the MLP buffer
- 	 */
-	//dcache.setRelSeqNum(0);	
-			
+		if((*mlp_it)[2] <= 0) {
+			mlp_file << (*mlp_it)[0] <<" " << (*mlp_it)[1] << "\n";
+			mlp_it = mlp_list->erase(mlp_it);
+		}
+		else {
+			mlp_it++;
+		}
+	}
+	mlp_file.close(); 
+	
 }
 
+extern "C" void iCacheCounter(const uint32_t bb_id, const uint32_t size, const uint32_t start_addr) {
 
-
-extern "C" void iCacheCounter(const uint32_t size, const uint32_t start_addr) {
-
-	for(int i = start_addr; i <= start_addr + size; i++) {
+	// Assuming every instruction 4 bytes
+	for(int inst_addr = start_addr; inst_addr <= start_addr + size; inst_addr = inst_addr + 4) {
+		// Block index
+		int addr = inst_addr & ~(0x3F);
 		do_cache(icache::mcache1Map, 
-					icache::mcache2Map,
-					icache::mcache1List,
-					icache::mcache2List,
-					icache::L1miss_map,
-					icache::L2miss_map,
-					iMap1MaxSize,
-					iMap2MaxSize,
-					i,			// Instruction ID
-					i);		// Instruction address
-	}
+				icache::mcache2Map,
+				icache::mcache1List,
+				icache::mcache2List,
+				icache::L1miss_map,
+				icache::L2miss_map,
+				iMap1MaxSize,
+				iMap2MaxSize,
+				inst_addr,	// Instruction ID
+				addr, 		// Instruction address (block index)
+				bb_id);
+	}			
 	return;
 }
 
@@ -231,29 +273,32 @@ extern "C" void branchCounter(uint32_t bb_id, uint32_t branchInstID,
 	static long long br_mispredict_count = 0;
 	
 	bool flag = false;
-
+	int miss = 0;
 	//2-way saturating Branch predictor
 	branch_pred_it it  = bp->find(branchInstID);
 	if(it == bp->end()){
 		// Branch seen for the first time
-		target_state_pair insertPair = make_pair(branchTargetID,1);
+		target_state_pair insertPair = make_pair(branchTargetID, 1);
 		bp->insert(std::pair<uint32_t, std::pair<uint32_t, uint32_t> >(branchInstID, 
 			insertPair));
 	}	
 	else{
-		uint32_t curBrTargetID, curState, nxtBrTargetID, nxtState, nextBRTargetID;
+		uint32_t curBrTargetID, curState, nxtState, nextBRTargetID;
 
 		target_state_pair existingPair = it->second; 
 		curBrTargetID = existingPair.first;
 		curState = existingPair.second;
-
+	
+		DEBUG_MSG("branchinst " << branchInstID << " branchTarget " << branchTargetID << 
+				" state " << curState << "\n");
+		
 		switch(curState) {	
 		case 1: if (curBrTargetID == branchTargetID)
 						nxtState = 1;
 				  else{ 
 						nxtState = 2;
-						update_br_mispredict(bb_br_mispr_map, branch_mispr_map, bb_id, branchInstID);
 						br_mispredict_count++; 
+						miss = 1;
 					}
 				  break;
 		case 2: if(curBrTargetID == branchTargetID)
@@ -261,7 +306,7 @@ extern "C" void branchCounter(uint32_t bb_id, uint32_t branchInstID,
 	    		  else{
 						nxtState = 3;
 						br_mispredict_count++;
-						update_br_mispredict(bb_br_mispr_map, branch_mispr_map, bb_id, branchInstID);
+						miss = 1;
 						flag = true;
 				  }
 				  break;
@@ -270,7 +315,7 @@ extern "C" void branchCounter(uint32_t bb_id, uint32_t branchInstID,
 				  else{
 						nxtState = 2;
 						br_mispredict_count++;
-						update_br_mispredict(bb_br_mispr_map, branch_mispr_map, bb_id,  branchInstID);
+						miss = 1;
 						flag = true;
 					}
 				  break;
@@ -278,13 +323,17 @@ extern "C" void branchCounter(uint32_t bb_id, uint32_t branchInstID,
 						nxtState = 4;
 				  else{
 						nxtState = 3;
-						update_br_mispredict(bb_br_mispr_map, branch_mispr_map, bb_id, branchInstID);
 						br_mispredict_count++;
+						miss = 1;
 					}
 					break;
 		default: nxtState = 1; 
 					cout<<"Incorrect behavior in the branch predictor";
 		}
+		
+		update_br_mispredict(bb_br_mispr_map, branch_mispr_map, bb_id, branchInstID, miss);
+		DEBUG_MSG("branchinst " << branchInstID << " branchTarget " << branchTargetID << 
+					" next state " << nxtState << "\n");
 
 		if(flag)
 			nextBRTargetID = branchTargetID;
@@ -301,32 +350,54 @@ extern "C" void branchCounter(uint32_t bb_id, uint32_t branchInstID,
 void update_br_mispredict(BBBranchMisMap *bb_br_mispr_map, 
 							BranchMisMap *branch_mispr_map, 
 							uint32_t bb_id, 
-							uint32_t branchInstID){
+							uint32_t branchInstID,
+							int miss){
 	DEBUG_MSG("Mispredict for BB " << bb_id);
 	// BB ID doesn't exist
 	if (bb_br_mispr_map->find(bb_id) == bb_br_mispr_map->end()) {
-		(*bb_br_mispr_map)[bb_id] = 1;
+		if(miss)
+			(*bb_br_mispr_map)[bb_id] = make_pair(1,1);
+		else	
+			(*bb_br_mispr_map)[bb_id] = make_pair(0,1);
 	}	
 	else {
-		(*bb_br_mispr_map)[bb_id] += 1;
+		// Increase the miss count
+		if(miss) {
+			(((bb_br_mispr_map->find(bb_id))->second).first)++;
+		}
+		// Increment the total count
+		(((bb_br_mispr_map->find(bb_id))->second).second)++;
 	}
 
 	//Branch ID doesn't exist
-	if(branch_mispr_map->find(branchInstID)==branch_mispr_map->end()){
-		(*branch_mispr_map)[branchInstID]=1;
+	/*if(branch_mispr_map->find(branchInstID)==branch_mispr_map->end()){
+		if(miss)
+			(*branch_mispr_map)[branchInstID]= 1;
+			((map_it->second).first)++;
 	}				
-	else{
-		(*branch_mispr_map)[branchInstID]+=1;
-	}
+	else {
+		if(miss)
+			(*branch_mispr_map)[branchInstID]+=1;
+	}*/
 }
 
-void branchPrinter() {
+extern "C" void branchPrinter(void) {
+	ofstream branch_mispredict_file;
+	branch_mispredict_file.open("branch_mispredict.txt", ios::app);
 	
 	BBBranchMisMap::iterator it;
 	for(it = bb_br_mispr_map->begin(); it!=bb_br_mispr_map->end(); it++) {
 		DEBUG_MSG("The number of mispredicts for basic block " << it->first << " is" 
-			<< it->second);
+			<< (it->second).first <<  " " << (it->second).second);
+	
+		branch_mispredict_file << it->first << " " << (it->second).first << " " << (it->second).second << endl;
 	}
+	branch_mispredict_file.close();
+	
+	// Clear the whole map for next time
+	bb_br_mispr_map->clear();
+	print_miss_maps();
+	// branch_mispr_map->clear();
 } 
 
 /* 
@@ -334,34 +405,37 @@ void branchPrinter() {
  * else returns false
  */
 int do_cache(CacheMap *mcache1Map, 
-				  CacheMap *mcache2Map, 
-				  CacheList *mcache1List,
-				  CacheList *mcache2List,
-				  CacheMissMap *L1miss_map,
-				  CacheMissMap *L2miss_map,
-				  int maxL1Size,
-				  int maxL2Size,
-				  uint32_t instID, 
-				  uint32_t addr){
-	
+			CacheMap *mcache2Map, 
+		 	CacheList *mcache1List,
+			CacheList *mcache2List,
+			CacheMissMap *L1miss_map,
+			CacheMissMap *L2miss_map,
+			int maxL1Size,
+			int maxL2Size,
+			uint32_t instID, 
+			uint32_t addr,
+			uint32_t bb_id){
+
+		
 	bool is_hit = true;
-   EntryPair ep = make_pair(addr, instID);	
+   	EntryPair ep = make_pair(addr, instID);	
 	// Check in L1
 	if(is_cache_miss(mcache1Map, addr)){
 		l1miss++;
-		update_miss_map(L1miss_map, instID);
+		update_miss_map(L1miss_map, bb_id, 1);
 
 		//Check in L2
 		if(is_cache_miss(mcache2Map, addr)) {
-			// Cache Miss. Fill in only L1 and L2 from memory
+			// Cache Miss. Fill in L1 and L2 from memory
 			is_hit = false;
 			l2miss++;
-			update_miss_map(L2miss_map, instID);
+			update_miss_map(L2miss_map, bb_id, 1);
 			insertInL1(mcache1Map, mcache1List, maxL1Size, instID, addr);
 			insertInL2(mcache1Map, mcache1List, maxL2Size, instID, addr);
 		}
 		else {
 			//Found in L2. Refresh L2 list and fill in L1
+			update_miss_map(L2miss_map, bb_id, 0);
 			mcache2List->remove(ep);
 			mcache2List->push_front(ep);
 			(*mcache2Map)[addr] = mcache2List->begin();	
@@ -369,11 +443,13 @@ int do_cache(CacheMap *mcache1Map,
 		}
 	}
 	else{
+		update_miss_map(L1miss_map, bb_id, 0);
 		//Entry found in L1. Refresh L1 list
 		mcache1List->remove(ep);
 		mcache1List->push_front(ep);
 		(*mcache1Map)[addr] = mcache1List->begin();	
 	}
+
 	return is_hit;
 }
 
@@ -386,10 +462,10 @@ bool is_cache_miss(CacheMap *cacheMap, uint32_t addr) {
 
 //Insert in L1 an entry that is not present in L2
 void insertInL1(CacheMap *mcache1Map, 
-					 CacheList *mcache1List,
-					 int l1MaxSize,
-					 uint32_t instID, 
-					 uint32_t addr){
+				CacheList *mcache1List,
+				int l1MaxSize,
+				uint32_t instID, 
+				uint32_t addr){
 	EntryPair ep = make_pair(addr, instID);	
 	mcache1List->push_front(ep);
 	(*mcache1Map)[addr] = mcache1List->begin();
@@ -405,10 +481,10 @@ void insertInL1(CacheMap *mcache1Map,
 
 //Insert in L2
 void insertInL2(CacheMap *mcache2Map,
-					 CacheList *mcache2List,
-					 int l2MaxSize,
-					 uint32_t instID, 
-					 uint32_t addr){
+				CacheList *mcache2List,
+				int l2MaxSize,
+				uint32_t instID, 
+				uint32_t addr){
 	
 	EntryPair ep = make_pair(addr, instID);
 	mcache2List->push_front(ep);
@@ -438,17 +514,87 @@ bool isfullL2(int Map2MaxSize){
 		return false;
 }
 
-void update_miss_map(CacheMissMap *miss_map, uint32_t instID){
-	std::map<uint32_t, uint32_t>::iterator map_it;
-	map_it = miss_map->find(instID);
+void update_miss_map(CacheMissMap *miss_map, uint32_t bb_id, int miss){
+	std::map<uint32_t, std::pair<uint32_t, uint32_t> >::iterator map_it;
+	map_it = miss_map->find(bb_id);
 	
 	if(map_it==miss_map->end()){
-		//Insert a new entry with count = 1
-		miss_map->insert(std::pair<uint32_t, uint32_t>(instID, 1));
+		//Insert a new entry with count = 1 and total = 1 
+		if(miss) {
+			(*miss_map)[bb_id] = make_pair(1,1);
+		}
+		//Insert a new entry with count = 0 and total = 1 
+		else {
+			(*miss_map)[bb_id] = make_pair(0,1);
+		}
 	}
 	else{
-		//Entry found. Increment count by 1
-		map_it->second +=1;
+		if(miss) {
+			((map_it->second).first)++;
+			((map_it->second).second)++;
+		}
+		else {
+			((map_it->second).second)++;
+		} 
 	}
 }
 
+void print_miss_maps() {
+	print_miss_map(icache::L1miss_map , string("L1-I miss"));
+	print_miss_map(icache::L2miss_map , string("L2-I miss"));
+
+	print_miss_map(dcache::L1miss_map , string("L1-D miss"));
+	print_miss_map(dcache::L2miss_map , string("L2-D miss"));
+
+}
+
+void print_miss_map(CacheMissMap *miss_map, string type) {
+	ofstream cache_miss_file;
+	type.append(".txt");
+	cache_miss_file.open(type.c_str(), ios::app);
+	std::map<uint32_t, std::pair<uint32_t, uint32_t> >::iterator map_it;
+		
+	for(map_it = miss_map->begin(); map_it != miss_map->end(); map_it++) {
+		cache_miss_file << map_it->first << " " << (map_it->second).first << " " << (map_it->second).second << "\n";	
+	}
+	miss_map->clear();
+	cache_miss_file.close();
+}
+
+
+/*int total_misses = get_num_misses_in_BB(bb_id, dcache::L1miss_map) 
+		+ get_num_misses_in_BB(bb_id, dcache::L2miss_map);
+
+	mlp_it = mlp_list->begin();
+	while(mlp_it != mlp_list->end()) {
+		if ((*mlp_it)[0] == bb_id) {
+			cout << "Found";
+			bb_exists = true;
+		}
+		// Add total_misses to all the entries in the MLP list
+		(*mlp_it)[1] = (*mlp_it)[1] + total_misses;	
+		// Substract the number of instructions executed
+		(*mlp_it)[2] = (*mlp_it)[2] - num_insts;
+	
+		if((*mlp_it)[2] <= 0) {
+			mlp_file << (*mlp_it)[0] <<" " << (*mlp_it)[1] << "\n";
+			if(bb_id == 89210) {
+				cout << "Deleting\n";
+			}
+			mlp_it = mlp_list->erase(mlp_it);
+		}
+		else {
+			mlp_it++;
+		}
+	}
+	// Insert a new row in the list
+	if(total_misses != 0 && !bb_exists) {
+		if (bb_id == 89210) {
+			cout << "Inserting\n";
+		}
+		std::vector<int> v;
+		v.push_back(bb_id);
+		v.push_back(0);
+		v.push_back(60);
+		mlp_list->push_back(v);
+	}*/	
