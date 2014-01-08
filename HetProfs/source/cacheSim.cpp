@@ -88,14 +88,6 @@ class dcache{
 	static CacheMissMap *L2miss_map;
 	static MLPBuffer *mlp_buffer;
 
-	int getLastSeqNum() {
-		return last_seq_num;
-	}
-	
-	void setLastSeqNum(int seq_num) {
-		last_seq_num = seq_num;
-	}
-
 };
 
 class icache{
