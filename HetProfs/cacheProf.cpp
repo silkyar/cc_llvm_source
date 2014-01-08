@@ -1,4 +1,4 @@
-#define DEBUG_TYPE "HetProfiler"
+
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Pass.h"
@@ -15,7 +15,6 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/raw_ostream.h"
 #include "fstream"
-//#include "llvm/Analysis/ProfileInfo.h"
 #include "llvm/Transforms/Utils/UnifyFunctionExitNodes.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -27,7 +26,6 @@
 #include <iostream>
 #include <fstream>
 #include "llvm/Pass.h"
-//#include "llvm/Analysis/ProfileInfoTypes.h"
 #include "llvm/Support/DataTypes.h"
 #include <sys/types.h>
 #include <unistd.h>
@@ -53,9 +51,11 @@ struct cacheProf : public ModulePass {
 		static unsigned int mem_instruction_id;
 		static unsigned int br_instruction_id;
 		static unsigned int bb_id;
+		static unsigned int num_func;
 	  
-		std::map<std::pair<string, string>, int> bb_id_map; 
-		BBSizeMap bb_size_map;
+		std::map<std::pair<string, string>, int > bb_id_map; 
+		BBSizeMap bb_offset_size_map;
+
 		// Methods for static profiling
 		Function *dcacheCounter, *branchCounter, *MLPCounter, *icacheCounter;
 		Function *branchPrinter;
@@ -65,15 +65,15 @@ struct cacheProf : public ModulePass {
 			/*
  			 * Read the file with BB size information for Icache profiling
 			 */
-			char bb_file_path[1024], bb_file_name[]="/bb_size_add.txt";
+			char bb_file_path[1024], bb_file_name[]="/bb_offset_out.txt";
 			ifstream bb_file;
+			ofstream bb_id_out;
 			string line, data, func, bb;
 			int size, addr;
-			
 			// Get working directory
 			if (getcwd(bb_file_path, sizeof(bb_file_path)) != NULL) {
-           	strcat(bb_file_path, bb_file_name);
-						bb_file.open(bb_file_path, ios::in);
+           		strcat(bb_file_path, bb_file_name);
+				bb_file.open(bb_file_path, ios::in);
 
 				/* 
  				 * Read file and make a map of BasicBlock sizes
@@ -81,16 +81,31 @@ struct cacheProf : public ModulePass {
 				 */
 				if(bb_file.is_open()) {
 					while(getline(bb_file, line)) {
+						bb_id++;
 						std::stringstream linestream(line);
-						linestream>>func>>bb>>size>>addr;
+						linestream>>func>>bb>>std::hex>>addr>>std::hex>>size;
 						BBlk bblk = make_pair(func, bb);
 						Addr add = make_pair(size, addr);
-						bb_size_map.insert(std::pair<
+						bb_offset_size_map.insert(std::pair<
 											std::pair<std::string, std::string>, 
 											std::pair<int, int>
 											>(bblk, add));
+						bb_id_map.insert(std::pair<std::pair<string, string>, int >(
+							bblk, bb_id));
 					}
 					bb_file.close();
+					
+					std::map<std::pair<string, string>, int >::iterator it; 
+					it = bb_id_map.begin();
+					bb_id_out.open("bb_id_out.txt", ios::out);
+					while(it != bb_id_map.end()) {
+						BBlk bblk = it->first;
+						int id = it->second;
+						std::pair<int, int> size_addr = bb_offset_size_map[bblk];
+						bb_id_out << std::dec << id << std::hex << " " << size_addr.second <<  " " << (it->first).first << " " << (it->first).second << "\n";
+						it++;
+					}
+					bb_id_out.close();
 				}
 				else {
 					errs()<<"Cannot open file to read BB sizes"<<bb_file_path<<"\n";
@@ -129,48 +144,47 @@ struct cacheProf : public ModulePass {
 														(Type*)0);
      		branchPrinter = cast<Function>(branchPrintHookFunc);
 			
+			/* 
+ 			 * External function for instruction cache profiling
+			 * Arguments - Instruction ID, Memory address
+			 * Return type - Void
+			 */
+			icacheHookFunc = M.getOrInsertFunction("iCacheCounter",
+													Type::getVoidTy(context),
+                                              		llvm::Type::getInt32Ty(context),
+                                              		llvm::Type::getInt32Ty(context),
+													llvm::Type::getInt32Ty(context),
+													(Type*)0);
+      		icacheCounter= cast<Function>(icacheHookFunc);
 
 			/* 
  			 * External function for data cache profiling
 			 * Arguments - Instruction ID, Memory address
 			 * Return type - Void
 			 */
-	    	
-			/*dcacheHookFunc = M.getOrInsertFunction("dCacheCounter",
+			dcacheHookFunc = M.getOrInsertFunction("dCacheCounter",
 													Type::getVoidTy(context),
                                                		llvm::Type::getInt32Ty(context),
                                                		llvm::Type::getInt32Ty(context),
-													llvm::Type::getInt32Ty(context),
                                                		llvm::Type::getInt64Ty(context),
 													(Type*)0);
        		dcacheCounter= cast<Function>(dcacheHookFunc);
-			*/	
-		   	/* 
- 			 * External function for instruction cache profiling
-			 * Arguments - Instruction ID, Memory address
-			 * Return type - Void
-			 *//*
-			icacheHookFunc = M.getOrInsertFunction("iCacheCounter",
-													Type::getVoidTy(context),
-                                              		llvm::Type::getInt32Ty(context),
-													llvm::Type::getInt32Ty(context),
-													(Type*)0);
-      		icacheCounter= cast<Function>(icacheHookFunc);
-
-			*/
+				
+		   	
+			
 			/*
  			 * External function for MLP
- 			 * Arguments - 
+ 			 * Arguments - BB_ID, Number of Instructions in the BB (from bb_offset map) 
  			 * Return type - Void
- 			 */ /*
+ 			 */ 
 			MLPHookFunc = M.getOrInsertFunction("MLPCounter", 
 												Type::getVoidTy(context),
 												llvm::Type::getInt32Ty(context),
 												llvm::Type::getInt32Ty(context),
 												(Type*)0);
 			MLPCounter = cast<Function>(MLPHookFunc);
-			*/
-
+			ofstream myfile;
+			myfile.open ("cerr_out", ios::out);
 
       		// Iterating through all BB and profiling them
      		for(Module::iterator F = M.begin(), E = M.end(); F!= E; ++F) {
@@ -178,10 +192,9 @@ struct cacheProf : public ModulePass {
 				string ret_bb_name;
 				Function *func = &*F;
 				TerminatorInst *termI = NULL;
-	
-				// errs()<<func_name<<"\n";	
+				
 				// Get the return block for this function
-				if((func_name.compare("main")  == 0) && !func->isDeclaration()) {
+				if(!func->isDeclaration()) {
 					UEN= &getAnalysis<UnifyFunctionExitNodes>(*func);
 					if (UEN != NULL && UEN->getReturnBlock() != NULL) {
 						ret_bb_name = UEN->getReturnBlock()->hasName() ? 
@@ -194,93 +207,220 @@ struct cacheProf : public ModulePass {
 				for(Function::iterator BB = F->begin(), E = F->end(); BB != E; 
 					++BB) {
 				
-					bb_id++;
-				
-					// Insert this basic block in the BB-ID map
 					string bb_name = (BB->hasName()) ? (BB->getName()).str(): "";
-					std::pair<string, string> func_bb = make_pair(func_name, 
-																  bb_name);
-					bb_id_map.insert(std::pair<std::pair<string, string>, int>(
-						func_bb, bb_id));
-
-					// Branch profiling
-					cacheProf::branch_profiling(bb_id, BB, branchHookFunc, context);
 					
-					if ((func_name.compare("main") == 0) && (bb_name.compare(ret_bb_name)== 0)) {
-						std::vector<Value*> Args(0);
-						if (termI != NULL) {
-							errs() << "branchPrinter will be called" << "\n";
-							CallInst::Create(branchPrinter, Args, "", termI);
+					// Search for this basic block in the dump (bb_id_map)
+					// and instrument if found
+					std::pair<string, string> bblk = make_pair(func_name, bb_name);
+					if(bb_id_map.find(bblk) != bb_id_map.end()) {
+						myfile << "$$$$$$$\n";
+						int id = bb_id_map[bblk];
+						
+						std::pair<int, int> bb_off_add = bb_offset_size_map[bblk];	
+						// Branch profiling
+						cacheProf::branch_profiling(id, BB, branchHookFunc, context);
+					
+						// Instruction cache profiling
+						cacheProf::inst_addr_profiling(id, bb_off_add, BB, icacheHookFunc, context);
+
+						// Data cache profiling
+						cacheProf::data_cache_profiling(id, BB, dcacheHookFunc, context);
+						
+						// MLP Profiling
+						cacheProf::mlp_profiling(id, bb_off_add, BB, context);
+ 
+						// Branch profile printing
+						// NOTE: This should always be done in the end because it clears the maps
+						if (bb_name.compare(ret_bb_name)== 0) {
+							std::vector<Value*> Args(0);
+							if (termI != NULL) {
+								CallInst::Create(branchPrinter, Args, "", termI);
+								//CallInst::Create(missMapPrinter, Args, "", termI);
+							}
 						}
 					}
-					
-					// Data cache profiling
-					// cacheProf::cache_profiling(bb_id, BB, cacheHookFunc, context);
-					// cacheProf::mlp_profiling(bb_id, BB, dcacheHookFunc, context);
-					// Instruction cache profiling
-					// cacheProf::inst_addr_profiling(bb_id, BB, icacheHookFunc, context);
-
-					// Get the size of the basic block and starting address
-					/*BBlk bb_list_key = make_pair(func_name, 
-							 				 bb_name);
-				std::map<std::pair<std::string, std::string>, 
-						std::pair<int,int> >::iterator map_it;
-				map_it = bb_size_map.find(bb_list_key);
-		
-				if(map_it != bb_size_map.end()){
-					std::pair<int, int>bb_add = map_it->second;
-				}*/
-
+					else {
+						myfile << func_name<<"  "<<bb_name<<" not found in map \n";
+					}
 				}
      		}
         return false;
 		}
 
+		// Branch profiler	
+		virtual bool branch_profiling(int bb_id, 
+										Function::iterator &BB, 
+										Constant* branchHookFunc,  
+										LLVMContext& context){
+			
+			// TODO: Check the last instruction of every BB (except for the last
+			// BB) for branch instruction
+			for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); 
+				BI != BE; ++BI){
+				if(isa<BranchInst>(BI)){
+  					int num_succ = 0;
+
+
+					// errs()<<"Branch Instruction "<<*BI<<"\n";
+					BasicBlock *thisBB = BI->getParent();
+					TerminatorInst *termI = thisBB->getTerminator();	
+					num_succ = termI->getNumSuccessors();							
+					if(num_succ > 1){				
+						for(int i=0; i<num_succ; i++){
+							std::vector<Value*> Args(3);
+								
+							BasicBlock* sucBB = termI->getSuccessor(i);
+							Instruction* sucInst = sucBB->getFirstNonPHI();
+							// errs()<<"Successor Instruction "<<*sucInst<<"\n";
+							// Basic Block ID		
+							Args[0] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
+														bb_id);
+							// Branch instruction ID
+							Args[1] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
+														br_instruction_id);
+							// Target branch instruction ID
+							Args[2] =  ConstantInt::get(llvm::Type::getInt32Ty(context),
+														i);
+							// Instrument the branch target instructions
+							if(branchCounter!=NULL && !Args.empty()){
+								CallInst::Create(branchCounter, Args, "",sucInst);
+   	              			}	
+						}
+					}
+					//Increment the branch instruction ID for next time
+					++br_instruction_id;
+				}
+   	    	}
+   	    return false;
+		}
+
 
 		/*
  		 * Instruction cache profiling
- 		 *//*
-		virtual bool inst_addr_profiling(string func_name, 
-										 			string bb_name,
-													Function::iterator &BB, 
-										 			Constant* icacheHookFunc, 
-										 			LLVMContext& context
-										 		  ) {
+ 		 */
+		virtual bool inst_addr_profiling(int bb_id,
+										 std::pair<int, int> bb_off_add,
+										 Function::iterator &BB, 
+										 Constant* icacheHookFunc, 
+										 LLVMContext& context
+										 ) {
 			
- 			 * For every basic block, upon entry call the external method
- 			 * to create icache misses
- 			 *//*
-			std::vector<Value*> Args(2);
+			std::vector<Value*> Args(3);
+			/* 
+			 * The arguments are bb_id, size and the starting address of the basic block 
+			 */
+			Args[0] = ConstantInt::get(llvm::Type::getInt32Ty(
+				BB->getContext()), bb_id);
+			Args[1] = ConstantInt::get(llvm::Type::getInt32Ty(
+				BB->getContext()), bb_off_add.first);
+			Args[2] = ConstantInt::get(llvm::Type::getInt32Ty(
+				BB->getContext()), bb_off_add.second);
 
-			BBlk bb_list_key = make_pair(func_name, 
-							 					  bb_name);
-			std::map<std::pair<std::string, std::string>, 
-						std::pair<int,int> >::iterator map_it;
-			map_it = bb_size_map.find(bb_list_key);
-		
-			if(map_it != bb_size_map.end()){
-				std::pair<int, int>bb_add = map_it->second;
-
-				  
- 				 * The arguments are the size of the basic block and 
-				 * a dummy starting address
-				 
-				Args[0] = ConstantInt::get(llvm::Type::getInt32Ty(	
-							 BB->getContext()), bb_add.first);
-				Args[1] = ConstantInt::get(llvm::Type::getInt32Ty(
-								BB->getContext()), bb_add.second);
-				
-				if(icacheCounter != NULL && !Args.empty()) {
-					Instruction* first_inst = BB->getFirstNonPHI();
-					CallInst::Create(icacheCounter, Args, "", first_inst);
-				}
-			} else {
-				errs()<<"Basic Block "<<bb_name<<" size not found\n";
+			if(icacheCounter != NULL && !Args.empty()) {
+				Instruction* first_inst = BB->getFirstNonPHI();
+				CallInst::Create(icacheCounter, Args, "", first_inst);
 			}
 			return false;
 		}
 	
-		*/
+		// D-cache profiler	
+		virtual bool data_cache_profiling(int bb_id,
+										Function::iterator &BB,  
+										Constant* cacheHookFunc,  
+										LLVMContext& context) {
+
+	
+			for(BasicBlock::iterator BI = BB->begin(), 
+				BE = BB->end(); BI != BE; ++BI) {
+				
+				if(isa<LoadInst>(BI)) {
+					std::vector<Value*> Args(3);
+					LoadInst *LI = dyn_cast<LoadInst>(BI);
+					Value* ptrOp =  LI->getPointerOperand();
+		
+					// Basic block ID	
+					Args[0] = ConstantInt::get(llvm::Type::getInt32Ty(
+												BB->getContext()), bb_id);
+						
+					// Instruction ID
+					Args[1] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
+												++mem_instruction_id);
+					// Load Address
+					Args[2] = new PtrToIntInst(ptrOp, 
+												llvm::Type::getInt64Ty(context), 
+												"addr_var", 
+												LI);
+					/*
+					 * Load instruction indicator
+					 * Might come in handy later for dirty blocks
+				`	 */
+					// Args[2] = ConstantInt::get(llvm::Type::getInt32Ty(context), 0);
+
+					if(dcacheCounter!=NULL && !Args.empty()) {
+						CallInst::Create(dcacheCounter, Args, "",BI);
+        			}	
+				}
+
+				else if(isa<StoreInst>(BI)) {
+					std::vector<Value*> Args(3);
+  					StoreInst *SI = dyn_cast<StoreInst>(BI);
+					Value* ptrOp =  SI->getPointerOperand();
+	
+					// Basic block ID	
+					Args[0] = ConstantInt::get(llvm::Type::getInt32Ty(
+												BB->getContext()), bb_id);
+
+					// Instruction ID
+					Args[1] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
+														 ++mem_instruction_id);
+					// Store Address
+					Args[2] = new PtrToIntInst(ptrOp, 
+												llvm::Type::getInt64Ty(context), 
+												"addr_var", 
+												SI);
+				  	/*
+					 * Store Instruction indicator
+					 * Might come in handy later for dirty blocks
+					 */
+					// Args[2] = ConstantInt::get(llvm::Type::getInt32Ty(context),1);	
+						
+					if(dcacheCounter!=NULL && !Args.empty()){
+						CallInst::Create(dcacheCounter, Args, "",BI);
+        			}
+				}
+			}
+			return false;
+		}
+
+		virtual bool mlp_profiling(int bb_id,
+									std::pair<int, int> bb_off_add,
+									Function::iterator &BB,
+									LLVMContext& context) {
+			std::vector<Value*> Args(2);
+			/*int num_mem = 0;
+
+			for(BasicBlock::iterator BI = BB->begin(), 
+				BE = BB->end(); BI != BE; ++BI) {
+
+				if(isa<LoadInst>(BI) || isa<StoreInst>(BI)) {
+					num_mem++;
+				}
+			}*/
+			//if (num_mem > 0) {
+				TerminatorInst *termI = (*BB).getTerminator();	
+				// The arguments should be BB_ID, number of instructions in this BB
+				Args[0] = ConstantInt::get(llvm::Type::getInt32Ty(
+					BB->getContext()), bb_id);
+				Args[1] = ConstantInt::get(llvm::Type::getInt32Ty(
+					BB->getContext()), bb_off_add.first);
+			
+				if(MLPCounter!=NULL && !Args.empty()) {
+					CallInst::Create(MLPCounter, Args, "",termI);
+				}
+			//}
+			return true;
+		}
+
 		/* 
  		 * Get the total number of instructions in a basic block
  		 */
@@ -292,6 +432,19 @@ struct cacheProf : public ModulePass {
 			}
 			return inst_count;
 		}	
+
+			
+	};
+}       
+char cacheProf::ID=0;
+unsigned int cacheProf::mem_instruction_id=0;
+unsigned int cacheProf::br_instruction_id=0;
+unsigned int cacheProf::bb_id=0;
+//unsigned int cacheProf::num_func=0;
+
+//Register our pass
+static RegisterPass<cacheProf>Y("cacheProf", "Profile dynamic operations");
+
 
 		/* 
  		 * MLP profiling
@@ -378,117 +531,40 @@ struct cacheProf : public ModulePass {
 			return false;
 		}		
 		 *//*
-		// D-cache profiler	
-		virtual bool cache_profiling(int bb_id,
-											  Function::iterator &BB,  
-											  Constant* cacheHookFunc,  
-											  LLVMContext& context) {
+		*/
 
-	
-			for(BasicBlock::iterator BI = BB->begin(), 
-				BE = BB->end(); BI != BE; ++BI) {
-				
-				if(isa<LoadInst>(BI)) {
-					std::vector<Value*> Args(3);
-					LoadInst *LI = dyn_cast<LoadInst>(BI);
-					Value* ptrOp =  LI->getPointerOperand();
-					
-					// Instruction ID
-					Args[0] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
-														 ++mem_instruction_id);
-					// Load Address
-					Args[1] = new PtrToIntInst(ptrOp, 
-														llvm::Type::getInt64Ty(context), 
-														"addr_var", 
-														LI);
-					// Load instruction indicator
-					Args[2] = ConstantInt::get(llvm::Type::getInt32Ty(context), 0);
 
-					if(dcacheCounter!=NULL && !Args.empty()) {
-						CallInst::Create(dcacheCounter, Args, "",BI);
-        			}	
-				}
 
-				if(isa<StoreInst>(BI)) {
-					std::vector<Value*> Args(3);
-  					StoreInst *SI = dyn_cast<StoreInst>(BI);
-					Value* ptrOp =  SI->getPointerOperand();
-	
-					// Instruction ID
-					Args[0] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
-														 ++mem_instruction_id);
-					// Store Address
-					Args[1] = new PtrToIntInst(ptrOp, 
-														llvm::Type::getInt64Ty(context), 
-														"addr_var", 
-														SI);
-				  	// Store Instruction indicator
-					Args[2] = ConstantInt::get(llvm::Type::getInt32Ty(context),1);	
+	//if ((func_name.compare("main") == 0) && (bb_name.compare(ret_bb_name)== 0)) {
+						// Data cache profiling
+						// cacheProf::cache_profiling(id, BB, cacheHookFunc, context);
+						// Insert this basic block in the BB-ID map
+						// cacheProf::mlp_profiling(id, BB, dcacheHookFunc, context);
 						
-					if(dcacheCounter!=NULL && !Args.empty()){
-						CallInst::Create(dcacheCounter, Args, "",BI);
-        			}
-				}
-			}
-			return false;
-		}
+						// Get the size of the basic block and starting address
+						/*BBlk bb_list_key = make_pair(func_name, 
+								 				 bb_name);
+						std::map<std::pair<std::string, std::string>, 
+							std::pair<int,int> >::iterator map_it;
+						map_it = bb_size_map.find(bb_list_key);
+		
+						if(map_it != bb_size_map.end()){
+							std::pair<int, int>bb_add = map_it->second;
+						}*/
+
+//if((func_name.compare("main")  == 0) && !func->isDeclaration()) {
+
+
+// std::pair<string, string> bblk = bb_id_map[bb_id];
+			//std::pair<int, int> bb_off_add = bb_offset_size_map[bblk];
+
+			/* BBlk bb_list_key = make_pair(func_name, 
+							 				bb_name);
+			std::map<std::pair<std::string, std::string>, 
+						std::pair<int,int> >::iterator map_it;
+			map_it = bb_size_map.find(bb_list_key);
+		
+			if(map_it != bb_size_map.end()){
+				std::pair<int, int>bb_add = map_it->second;
+ 				
 */
-		// Branch profiler	
-		virtual bool branch_profiling(int bb_id, 
-										Function::iterator &BB, 
-										Constant* branchHookFunc,  
-										LLVMContext& context){
-			
-			// TODO: Check the last instruction of every BB (except for the last
-			// BB) for branch instruction
-			for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); 
-				BI != BE; ++BI){
-				if(isa<BranchInst>(BI)){
-  					int num_succ = 0;
-
-
-					// errs()<<"Branch Instruction "<<*BI<<"\n";
-					BasicBlock *thisBB = BI->getParent();
-					TerminatorInst *termI = thisBB->getTerminator();	
-					num_succ = termI->getNumSuccessors();							
-					if(num_succ > 1){				
-						for(int i=0; i<num_succ; i++){
-							std::vector<Value*> Args(3);
-								
-							BasicBlock* sucBB = termI->getSuccessor(i);
-							Instruction* sucInst = sucBB->getFirstNonPHI();
-							// errs()<<"Successor Instruction "<<*sucInst<<"\n";
-							// Basic Block ID		
-							Args[0] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
-														bb_id);
-							// Branch instruction ID
-							Args[1] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
-														br_instruction_id);
-							// Target branch instruction ID
-							Args[2] =  ConstantInt::get(llvm::Type::getInt32Ty(context),
-														i);
-							// Instrument the branch target instructions
-							if(branchCounter!=NULL && !Args.empty()){
-								CallInst::Create(branchCounter, Args, "",sucInst);
-   	              			}	
-						}
-					}
-					//Increment the branch instruction ID for next time
-					++br_instruction_id;
-				}
-   	    	}
-   	    return false;
-		}
-
-
-
-	};
-}       
-char cacheProf::ID=0;
-unsigned int cacheProf::mem_instruction_id=0;
-unsigned int cacheProf::br_instruction_id=0;
-unsigned int cacheProf::bb_id=0;
-
-//Register our pass
-static RegisterPass<cacheProf>Y("cacheProf", "Profile dynamic operations");
-
