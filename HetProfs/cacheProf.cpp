@@ -222,20 +222,19 @@ struct cacheProf : public ModulePass {
 					
 						// Instruction cache profiling
 						cacheProf::inst_addr_profiling(id, bb_off_add, BB, icacheHookFunc, context);
-
+						
 						// Data cache profiling
 						cacheProf::data_cache_profiling(id, BB, dcacheHookFunc, context);
 						
 						// MLP Profiling
 						cacheProf::mlp_profiling(id, bb_off_add, BB, context);
- 
+						 
 						// Branch profile printing
 						// NOTE: This should always be done in the end because it clears the maps
 						if (bb_name.compare(ret_bb_name)== 0) {
 							std::vector<Value*> Args(0);
 							if (termI != NULL) {
 								CallInst::Create(branchPrinter, Args, "", termI);
-								//CallInst::Create(missMapPrinter, Args, "", termI);
 							}
 						}
 					}
@@ -255,37 +254,33 @@ struct cacheProf : public ModulePass {
 			
 			// TODO: Check the last instruction of every BB (except for the last
 			// BB) for branch instruction
-			for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); 
-				BI != BE; ++BI){
-				if(isa<BranchInst>(BI)){
-  					int num_succ = 0;
-
-
-					// errs()<<"Branch Instruction "<<*BI<<"\n";
-					BasicBlock *thisBB = BI->getParent();
-					TerminatorInst *termI = thisBB->getTerminator();	
-					num_succ = termI->getNumSuccessors();							
-					if(num_succ > 1){				
-						for(int i=0; i<num_succ; i++){
-							std::vector<Value*> Args(3);
+			// for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); 
+			//	BI != BE; ++BI) {
+			TerminatorInst *termI = BB->getTerminator();	
+			if(isa<BranchInst>(termI)){
+  				int num_succ = 0;
+				// errs()<<"Branch Instruction "<<*BI<<"\n";
+				num_succ = termI->getNumSuccessors();							
+				if(num_succ > 1){				
+					for(int i=0; i<num_succ; i++){
+						std::vector<Value*> Args(3);
 								
-							BasicBlock* sucBB = termI->getSuccessor(i);
-							Instruction* sucInst = sucBB->getFirstNonPHI();
-							// errs()<<"Successor Instruction "<<*sucInst<<"\n";
-							// Basic Block ID		
-							Args[0] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
-														bb_id);
-							// Branch instruction ID
-							Args[1] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
-														br_instruction_id);
-							// Target branch instruction ID
-							Args[2] =  ConstantInt::get(llvm::Type::getInt32Ty(context),
-														i);
-							// Instrument the branch target instructions
-							if(branchCounter!=NULL && !Args.empty()){
-								CallInst::Create(branchCounter, Args, "",sucInst);
-   	              			}	
-						}
+						BasicBlock* sucBB = termI->getSuccessor(i);
+						Instruction* sucInst = sucBB->getFirstNonPHI();
+						// errs()<<"Successor Instruction "<<*sucInst<<"\n";
+						// Basic Block ID		
+						Args[0] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
+													bb_id);
+						// Branch instruction ID
+						Args[1] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
+													br_instruction_id);
+						// Target branch instruction ID
+						Args[2] =  ConstantInt::get(llvm::Type::getInt32Ty(context),
+													i);
+						// Instrument the branch target instructions
+						if(branchCounter!=NULL && !Args.empty()){
+							CallInst::Create(branchCounter, Args, "",sucInst);
+   	              		}	
 					}
 					//Increment the branch instruction ID for next time
 					++br_instruction_id;
