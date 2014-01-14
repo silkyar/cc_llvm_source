@@ -48,7 +48,7 @@ struct cacheProf : public ModulePass {
 		UnifyFunctionExitNodes *UEN;
 		
 		private:
-		static unsigned int mem_instruction_id;
+		// static unsigned int mem_instruction_id;
 		static unsigned int br_instruction_id;
 		static unsigned int bb_id;
 		static unsigned int num_func;
@@ -102,7 +102,9 @@ struct cacheProf : public ModulePass {
 						BBlk bblk = it->first;
 						int id = it->second;
 						std::pair<int, int> size_addr = bb_offset_size_map[bblk];
-						bb_id_out << std::dec << id << std::hex << " " << size_addr.second <<  " " << (it->first).first << " " << (it->first).second << "\n";
+						bb_id_out 	<< std::dec << id << std::hex << " " << size_addr.second \
+									<< " " << (it->first).first << " " << (it->first).second \
+									<< "\n";
 						it++;
 					}
 					bb_id_out.close();
@@ -131,6 +133,7 @@ struct cacheProf : public ModulePass {
 			 * Arguments - Instruction ID, Taken branch target ID
 			 * Return type - Void
 			 */
+			
 			branchHookFunc = M.getOrInsertFunction("branchCounter",
 													Type::getVoidTy(context),
 													llvm::Type::getInt32Ty(context),
@@ -138,12 +141,12 @@ struct cacheProf : public ModulePass {
 													llvm::Type::getInt32Ty(context),
 													(Type*)0);
      		branchCounter= cast<Function>(branchHookFunc);
-	
+				
 			branchPrintHookFunc = M.getOrInsertFunction("branchPrinter",
 														Type::getVoidTy(context),
 														(Type*)0);
      		branchPrinter = cast<Function>(branchPrintHookFunc);
-			
+				
 			/* 
  			 * External function for instruction cache profiling
 			 * Arguments - Instruction ID, Memory address
@@ -153,45 +156,46 @@ struct cacheProf : public ModulePass {
 													Type::getVoidTy(context),
                                               		llvm::Type::getInt32Ty(context),
                                               		llvm::Type::getInt32Ty(context),
-													llvm::Type::getInt32Ty(context),
+													llvm::Type::getInt64Ty(context),
 													(Type*)0);
       		icacheCounter= cast<Function>(icacheHookFunc);
-
+			
 			/* 
  			 * External function for data cache profiling
 			 * Arguments - Instruction ID, Memory address
 			 * Return type - Void
 			 */
+			
 			dcacheHookFunc = M.getOrInsertFunction("dCacheCounter",
 													Type::getVoidTy(context),
-                                               		llvm::Type::getInt32Ty(context),
                                                		llvm::Type::getInt32Ty(context),
                                                		llvm::Type::getInt64Ty(context),
 													(Type*)0);
        		dcacheCounter= cast<Function>(dcacheHookFunc);
 				
-		   	
+			   	
 			
 			/*
  			 * External function for MLP
  			 * Arguments - BB_ID, Number of Instructions in the BB (from bb_offset map) 
  			 * Return type - Void
- 			 */ 
+ 			 */
+			 
 			MLPHookFunc = M.getOrInsertFunction("MLPCounter", 
 												Type::getVoidTy(context),
 												llvm::Type::getInt32Ty(context),
-												llvm::Type::getInt32Ty(context),
 												(Type*)0);
 			MLPCounter = cast<Function>(MLPHookFunc);
+			
 			ofstream myfile;
 			myfile.open ("cerr_out", ios::out);
-
+			
       		// Iterating through all BB and profiling them
      		for(Module::iterator F = M.begin(), E = M.end(); F!= E; ++F) {
 				string func_name = (F->hasName())? (F->getName()).str(): "";
 				string ret_bb_name;
 				Function *func = &*F;
-				TerminatorInst *termI = NULL;
+				// TerminatorInst *termI = NULL;
 				
 				// Get the return block for this function
 				if(!func->isDeclaration()) {
@@ -199,16 +203,18 @@ struct cacheProf : public ModulePass {
 					if (UEN != NULL && UEN->getReturnBlock() != NULL) {
 						ret_bb_name = UEN->getReturnBlock()->hasName() ? 
 										UEN->getReturnBlock()->getName().str() : "";
-						termI = UEN->getReturnBlock()->getTerminator();
+						// termI = UEN->getReturnBlock()->getTerminator();
 					}
 				}
 				
  				// Iterate through all the basic blocks and profile them
 				for(Function::iterator BB = F->begin(), E = F->end(); BB != E; 
 					++BB) {
-				
-					string bb_name = (BB->hasName()) ? (BB->getName()).str(): "";
 					
+					string bb_name = (BB->hasName()) ? (BB->getName()).str(): "";
+					if(func_name).equals("strchr") {
+						errs() <<func_name<<"  "<< bb_name << "\n";
+					}
 					// Search for this basic block in the dump (bb_id_map)
 					// and instrument if found
 					std::pair<string, string> bblk = make_pair(func_name, bb_name);
@@ -217,6 +223,7 @@ struct cacheProf : public ModulePass {
 						int id = bb_id_map[bblk];
 						
 						std::pair<int, int> bb_off_add = bb_offset_size_map[bblk];	
+						
 						// Branch profiling
 						cacheProf::branch_profiling(id, BB, branchHookFunc, context);
 					
@@ -229,14 +236,13 @@ struct cacheProf : public ModulePass {
 						// MLP Profiling
 						cacheProf::mlp_profiling(id, bb_off_add, BB, context);
 						 
-						// Branch profile printing
 						// NOTE: This should always be done in the end because it clears the maps
-						if (bb_name.compare(ret_bb_name)== 0) {
+						/*if (bb_name.compare(ret_bb_name)== 0) {
 							std::vector<Value*> Args(0);
 							if (termI != NULL) {
 								CallInst::Create(branchPrinter, Args, "", termI);
 							}
-						}
+						}*/
 					}
 					else {
 						myfile << func_name<<"  "<<bb_name<<" not found in map \n";
@@ -246,6 +252,7 @@ struct cacheProf : public ModulePass {
         return false;
 		}
 
+		
 		// Branch profiler	
 		virtual bool branch_profiling(int bb_id, 
 										Function::iterator &BB, 
@@ -257,7 +264,7 @@ struct cacheProf : public ModulePass {
 			// for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); 
 			//	BI != BE; ++BI) {
 			TerminatorInst *termI = BB->getTerminator();	
-			if(isa<BranchInst>(termI)){
+			if(isa<BranchInst>(termI)) {
   				int num_succ = 0;
 				// errs()<<"Branch Instruction "<<*BI<<"\n";
 				num_succ = termI->getNumSuccessors();							
@@ -289,7 +296,6 @@ struct cacheProf : public ModulePass {
    	    return false;
 		}
 
-
 		/*
  		 * Instruction cache profiling
  		 */
@@ -308,7 +314,7 @@ struct cacheProf : public ModulePass {
 				BB->getContext()), bb_id);
 			Args[1] = ConstantInt::get(llvm::Type::getInt32Ty(
 				BB->getContext()), bb_off_add.first);
-			Args[2] = ConstantInt::get(llvm::Type::getInt32Ty(
+			Args[2] = ConstantInt::get(llvm::Type::getInt64Ty(
 				BB->getContext()), bb_off_add.second);
 
 			if(icacheCounter != NULL && !Args.empty()) {
@@ -317,7 +323,7 @@ struct cacheProf : public ModulePass {
 			}
 			return false;
 		}
-	
+		
 		// D-cache profiler	
 		virtual bool data_cache_profiling(int bb_id,
 										Function::iterator &BB,  
@@ -329,7 +335,7 @@ struct cacheProf : public ModulePass {
 				BE = BB->end(); BI != BE; ++BI) {
 				
 				if(isa<LoadInst>(BI)) {
-					std::vector<Value*> Args(3);
+					std::vector<Value*> Args(2);
 					LoadInst *LI = dyn_cast<LoadInst>(BI);
 					Value* ptrOp =  LI->getPointerOperand();
 		
@@ -338,26 +344,26 @@ struct cacheProf : public ModulePass {
 												BB->getContext()), bb_id);
 						
 					// Instruction ID
-					Args[1] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
+					/*Args[1] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
 												++mem_instruction_id);
-					// Load Address
-					Args[2] = new PtrToIntInst(ptrOp, 
+					*/// Load Address
+					Args[1] = new PtrToIntInst(ptrOp, 
 												llvm::Type::getInt64Ty(context), 
 												"addr_var", 
 												LI);
 					/*
 					 * Load instruction indicator
 					 * Might come in handy later for dirty blocks
-				`	 */
+					 */
 					// Args[2] = ConstantInt::get(llvm::Type::getInt32Ty(context), 0);
 
 					if(dcacheCounter!=NULL && !Args.empty()) {
 						CallInst::Create(dcacheCounter, Args, "",BI);
         			}	
 				}
-
+		
 				else if(isa<StoreInst>(BI)) {
-					std::vector<Value*> Args(3);
+					std::vector<Value*> Args(2);
   					StoreInst *SI = dyn_cast<StoreInst>(BI);
 					Value* ptrOp =  SI->getPointerOperand();
 	
@@ -366,10 +372,10 @@ struct cacheProf : public ModulePass {
 												BB->getContext()), bb_id);
 
 					// Instruction ID
-					Args[1] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
+					/*Args[1] =  ConstantInt::get(llvm::Type::getInt32Ty(context), 
 														 ++mem_instruction_id);
-					// Store Address
-					Args[2] = new PtrToIntInst(ptrOp, 
+					*/// Store Address
+					Args[1] = new PtrToIntInst(ptrOp, 
 												llvm::Type::getInt64Ty(context), 
 												"addr_var", 
 												SI);
@@ -386,53 +392,28 @@ struct cacheProf : public ModulePass {
 			}
 			return false;
 		}
-
+	
 		virtual bool mlp_profiling(int bb_id,
 									std::pair<int, int> bb_off_add,
 									Function::iterator &BB,
 									LLVMContext& context) {
-			std::vector<Value*> Args(2);
-			/*int num_mem = 0;
-
-			for(BasicBlock::iterator BI = BB->begin(), 
-				BE = BB->end(); BI != BE; ++BI) {
-
-				if(isa<LoadInst>(BI) || isa<StoreInst>(BI)) {
-					num_mem++;
-				}
-			}*/
-			//if (num_mem > 0) {
-				TerminatorInst *termI = (*BB).getTerminator();	
-				// The arguments should be BB_ID, number of instructions in this BB
-				Args[0] = ConstantInt::get(llvm::Type::getInt32Ty(
-					BB->getContext()), bb_id);
-				Args[1] = ConstantInt::get(llvm::Type::getInt32Ty(
-					BB->getContext()), bb_off_add.first);
+			std::vector<Value*> Args(1);
+			TerminatorInst *termI = (*BB).getTerminator();	
+			// The arguments should be BB_ID, number of instructions in this BB
+			/*Args[0] = ConstantInt::get(llvm::Type::getInt32Ty(
+				BB->getContext()), bb_id);*/
+			Args[0] = ConstantInt::get(llvm::Type::getInt32Ty(
+				BB->getContext()), bb_off_add.first);
 			
-				if(MLPCounter!=NULL && !Args.empty()) {
-					CallInst::Create(MLPCounter, Args, "",termI);
-				}
-			//}
+			if(MLPCounter!=NULL && !Args.empty()) {
+				CallInst::Create(MLPCounter, Args, "",termI);
+			}
 			return true;
 		}
-
-		/* 
- 		 * Get the total number of instructions in a basic block
- 		 */
-		int get_basic_block_inst_count(Function::iterator &BB) {
-			int inst_count  = 0;
-			for(BasicBlock::iterator BI = BB->begin(), 
-				BE = BB->end(); BI != BE; ++BI) {
-				inst_count++;
-			}
-			return inst_count;
-		}	
-
-			
 	};
 }       
 char cacheProf::ID=0;
-unsigned int cacheProf::mem_instruction_id=0;
+//unsigned int cacheProf::mem_instruction_id=0;
 unsigned int cacheProf::br_instruction_id=0;
 unsigned int cacheProf::bb_id=0;
 //unsigned int cacheProf::num_func=0;
