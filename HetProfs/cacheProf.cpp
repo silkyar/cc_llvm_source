@@ -65,7 +65,7 @@ struct cacheProf : public ModulePass {
 			/*
  			 * Read the file with BB size information for Icache profiling
 			 */
-			char bb_file_path[1024], bb_file_name[]="/bb_offset_out.txt";
+			char bb_file_path[1024], bb_file_name[]="/bb_offset_out_x86_32.txt";
 			ifstream bb_file;
 			ofstream bb_id_out;
 			string line, data, func, bb;
@@ -83,7 +83,7 @@ struct cacheProf : public ModulePass {
 					while(getline(bb_file, line)) {
 						bb_id++;
 						std::stringstream linestream(line);
-						linestream>>func>>bb>>std::hex>>addr>>std::hex>>size;
+						linestream>>func>>bb>>std::hex>>addr>>std::dec>>size;
 						BBlk bblk = make_pair(func, bb);
 						Addr add = make_pair(size, addr);
 						bb_offset_size_map.insert(std::pair<
@@ -103,8 +103,8 @@ struct cacheProf : public ModulePass {
 						int id = it->second;
 						std::pair<int, int> size_addr = bb_offset_size_map[bblk];
 						bb_id_out 	<< std::dec << id << std::hex << " " << size_addr.second \
-									<< " " << (it->first).first << " " << (it->first).second \
-									<< "\n";
+									<< std::dec << " " << (it->first).first << " " \
+									<< (it->first).second << "\n";
 						it++;
 					}
 					bb_id_out.close();
@@ -156,7 +156,7 @@ struct cacheProf : public ModulePass {
 													Type::getVoidTy(context),
                                               		llvm::Type::getInt32Ty(context),
                                               		llvm::Type::getInt32Ty(context),
-													llvm::Type::getInt64Ty(context),
+													llvm::Type::getInt32Ty(context),
 													(Type*)0);
       		icacheCounter= cast<Function>(icacheHookFunc);
 			
@@ -169,7 +169,7 @@ struct cacheProf : public ModulePass {
 			dcacheHookFunc = M.getOrInsertFunction("dCacheCounter",
 													Type::getVoidTy(context),
                                                		llvm::Type::getInt32Ty(context),
-                                               		llvm::Type::getInt64Ty(context),
+                                               		llvm::Type::getInt32Ty(context),
 													(Type*)0);
        		dcacheCounter= cast<Function>(dcacheHookFunc);
 				
@@ -212,7 +212,7 @@ struct cacheProf : public ModulePass {
 					++BB) {
 					
 					string bb_name = (BB->hasName()) ? (BB->getName()).str(): "";
-					if(func_name).equals("strchr") {
+					if((func_name).compare("strchr") == 0) {
 						errs() <<func_name<<"  "<< bb_name << "\n";
 					}
 					// Search for this basic block in the dump (bb_id_map)
@@ -314,7 +314,7 @@ struct cacheProf : public ModulePass {
 				BB->getContext()), bb_id);
 			Args[1] = ConstantInt::get(llvm::Type::getInt32Ty(
 				BB->getContext()), bb_off_add.first);
-			Args[2] = ConstantInt::get(llvm::Type::getInt64Ty(
+			Args[2] = ConstantInt::get(llvm::Type::getInt32Ty(
 				BB->getContext()), bb_off_add.second);
 
 			if(icacheCounter != NULL && !Args.empty()) {
@@ -348,7 +348,7 @@ struct cacheProf : public ModulePass {
 												++mem_instruction_id);
 					*/// Load Address
 					Args[1] = new PtrToIntInst(ptrOp, 
-												llvm::Type::getInt64Ty(context), 
+												llvm::Type::getInt32Ty(context), 
 												"addr_var", 
 												LI);
 					/*
@@ -376,7 +376,7 @@ struct cacheProf : public ModulePass {
 														 ++mem_instruction_id);
 					*/// Store Address
 					Args[1] = new PtrToIntInst(ptrOp, 
-												llvm::Type::getInt64Ty(context), 
+												llvm::Type::getInt32Ty(context), 
 												"addr_var", 
 												SI);
 				  	/*

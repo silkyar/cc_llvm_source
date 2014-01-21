@@ -94,7 +94,7 @@ int  do_cache(CacheMap *mcache1Map,
 				CacheMap *mcache2Map, 
 				CacheMissMap *L1miss_map,
 				CacheMissMap *L2miss_map,
-			 	uint64_t addr,
+			 	uint32_t addr,
 				uint32_t bb_id,
 				bool type);
 
@@ -126,7 +126,7 @@ std::list<std::vector<int> > *mlp_list = new std::list<std::vector<int> >;
 int count = 0;
 
 extern "C" void dCacheCounter(  const uint32_t bb_id,
-								const uint64_t addr) {
+								const uint32_t addr) {
 		
 	std::list<std::vector<int> >:: iterator mlp_it;
 	bool exists = false;
@@ -191,17 +191,19 @@ extern "C" void MLPCounter(uint32_t num_insts) {
 	// mlp_file.close(); 
 }
 
-extern "C" void iCacheCounter(const uint32_t bb_id, const uint32_t size, const uint64_t start_addr) {
-	
+extern "C" void iCacheCounter(const uint32_t bb_id, const uint32_t size, const uint32_t start_addr) {
+	// cout << bb_id << " " << " " << size << " " << std::hex << start_addr << std::dec << "\n";	
 	// Assuming every instruction 4 bytes
-	for(uint64_t inst_addr = start_addr; inst_addr <= start_addr + 4*size; inst_addr = inst_addr + 4) {
-		do_cache(icache::mcache1Map, 
+	for(uint32_t inst_addr = start_addr; inst_addr < start_addr + 4*size; inst_addr = inst_addr + 4) {
+		
+	int ret = do_cache(	icache::mcache1Map, 
 				icache::mcache2Map,
 				icache::L1miss_map,
 				icache::L2miss_map,
 				inst_addr, 		// Instruction address (block index)
 				bb_id,
 				1);
+	// std::cout << inst_addr << "  " << bb_id << " " << ret << "\n";
 	}			
 	return;
 }
@@ -342,7 +344,7 @@ int do_cache(CacheMap *mcache1Map,
             CacheMap *mcache2Map, 
             CacheMissMap *L1miss_map,
             CacheMissMap *L2miss_map,
-            uint64_t addr,
+            uint32_t addr,
             uint32_t bb_id,
             bool type){
     
@@ -363,6 +365,7 @@ int do_cache(CacheMap *mcache1Map,
         l2_Tag = addr >> 12; 
         l1_blk = iMap1MaxSize-1 & addr; // Get only last 9 bits
         l2_blk = iMap2MaxSize-1 & addr; // Get only last 12 bits
+		// cout << l1_blk << " " << l1_Tag << "\n";
     }   
 
     if (is_cache_miss(mcache1Map, l1_blk, l1_Tag)) {
@@ -429,6 +432,7 @@ void insertInCache(CacheMap *cacheMap,
         t2 = tp.first;
     }
     (*cacheMap)[blk] = make_pair(t1,t2);
+	// cout << "Inserting " << blk << " " << tag << "\n";
 }
 
 void update_miss_map(CacheMissMap *miss_map, uint32_t bb_id, int miss, int type){
