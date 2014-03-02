@@ -1,0 +1,42 @@
+/*
+extern "C" void MLPCounter(uint32_t mem_id, uint32_t load_cnt, uint32_t inst_cnt, uint32_t succLoads_cnt1, uint32_t succInst_cnt1, uint32_t succLoads_cnt2, uint32_t succInst_cnt2){
+
+	MLPPair mp;
+	MLPSet ms;
+	
+	//Insert loads count and successive instructions count in set
+	mp = make_pair(load_cnt, inst_cnt);
+	ms.insert(mp);
+	
+	//Insert loads count and instructions count in the successive basic blocks
+	mp = make_pair(succLoads_cnt1, succInst_cnt1);
+	ms.insert(mp);
+	
+	mp = make_pair(succLoads_cnt2, succInst_cnt2);
+	ms.insert(mp);
+
+	MLP_map[mem_id] = ms;
+	
+	//cout<<"Inserting in mlp counter"<<mem_id<<" "<<load_cnt<<" "<<" "<<inst_cnt<<" "<<succLoads_cnt1<<" "<<succInst_cnt2<<" ";
+	return;	
+}
+*
+
+void print_bb_size() {
+			std::map<std::pair<std::string, std::string> , std::pair<int,int> >::iterator bb_add_iter;
+			for (bb_add_iter = bb_size_map.begin(); bb_add_iter != bb_size_map.end(); 
+					bb_add_iter++) {
+				std::pair<std::string, std::string> func_bb = bb_add_iter->first;
+				std::pair<int, int> size_add = bb_add_iter->second;
+			}
+		}
+
+/*// Signal number of instructions in this basic block	
+			sig_args[0] =  ConstantInt::get(llvm::Type::getInt32Ty(BI->getContext()), 
+													  total_inst_count);
+			if(mlp_sig != NULL && !sig_args.empty()) {
+				Instruction* last_inst = BB->getTerminator();
+				CallInst::Create(mlp_sig, sig_args, "", last_inst);
+			}*/
+	
+

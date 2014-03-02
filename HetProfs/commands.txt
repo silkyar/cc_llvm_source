@@ -1,0 +1,8 @@
+#opt -load /net/tawas/x/silkyar/llvm/Debug+Asserts/lib/cacheProf.so -cacheProf /net/tawas/x/silkyar/llvm/Benchmarks/benchspec/CPU2006/403.gcc/src/concat.bc>out.bc
+#opt -load /net/tawas/x/silkyar/llvm/Debug+Asserts/lib/cacheProf.so -cacheProf a.bc>out.bc
+#clang -emit-llvm -c a.c -o a.bc
+#clang++ -emit-llvm -c cacheSim.cpp -o cacheSim.bc
+#clang -emit-llvm -c cacheSim.c -o cacheSim.bc
+#llvm-link a.bc cacheSim.bc -o final.bc
+#lli out.bc
+

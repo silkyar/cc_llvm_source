@@ -1,0 +1,95 @@
+#include<iostream>
+#include "llvm/Analysis/ProfileInfoTypes.h"
+#include <sys/types.h>
+#include <inttypes.h>
+#include <map>
+#include <vector>
+#define _STDC_FORMAT_MACROS
+
+
+using namespace std;
+
+//Map<Branch ID, pair<Branch target ID, Predictor state> > 
+typedef std::map<uint32_t, std::pair<uint32_t, uint32_t> >branch_pred_map;
+
+//Pair<Branch target ID, Predictor state>
+typedef std::pair<uint32_t, uint32_t> target_state_pair;
+
+branch_pred_map bp;
+
+extern "C" void cacheCounter(unsigned a, const uint64_t p, uint32_t type){
+
+	if(type==0)	
+	std::cout<<" Load instruction "<<a<<"\t"<<p<<"\t"<<"\n";
+	else 
+	std::cout<<" Store instruction "<<a<<"\t"<<p<<"\t"<<"\n";
+	return;
+}
+
+extern "C" void branchCounter(uint32_t branchInstID, uint32_t branchTargetID){
+	
+	static long br_mispredict_count = 0;
+	bool flag = false;
+
+	std::cout<<" Branch Instruction "<<branchInstID<<" ";
+	std::cout<<" Branch Instruction Target ID "<<branchTargetID<<"\n\n";
+	
+	//Simple Branch predictor
+	
+	if(bp.find(branchInstID) == bp.end()){
+		//Doesn't exist
+		target_state_pair insertPair = make_pair(branchTargetID,1);
+		branch_pred.insert(std::pair<uint32_t, std::pair<uint32_t, uint32_t> >(branchInstID, insertPair));
+	}	
+	else{
+
+		uint32_t curBrTargetID, curState, nxtBrTargetID, nxtState, nextBRTargetID;
+
+		target_state_pair existingPair = branch_pred.find(branchInstID)->second; 
+		curBrTargetID = existingPair.first;
+		curState = existingPair.second;
+
+			switch(curState) {	//State
+			Case 1: if (curBrTargetID == branchTargetID)
+						nxtState = 1;
+					else{ 
+						nxtState = 2;
+						br_mispredit_count++; 
+					}
+			Case 2: if(curBrTargetID == branchTargetID)
+						nxtState = 1;
+					else{
+						nxtState = 3;
+						br_mispredit_count++;
+						nxtBrTargetID = branchTargetID;
+						flag = true;
+					}
+			Case 3: if(curBrTargetID == branchTargetID)
+						nxtState = 4;
+					else{
+						nxtState = 2;
+						br_mispredict_count++;
+						nxtBrTargetID = branchTargetID;	
+						flag = true;
+					}
+			Case 4: if(curBrTargetID == branchTargetID)
+						nxtState = 4;
+					else{
+						nxtState = 3;
+						br_mispredit_count++;
+					}
+			default: cout<<"Incorrect behavior in Branch Predictor";
+		}
+
+		if(flag)
+			nextBRTargetID = nxtBrTargetID;
+		else
+			nextBRTargetID = curBrTargetID;
+
+		//Next pair
+		target_state_pair nxtPair = makepair(nextBRTargetID, nxtState);
+
+		//Update predictor
+		
+	}
+}

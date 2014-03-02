@@ -1,0 +1,29 @@
+OVERVIEW: llvm object file dumper
+
+USAGE: llvm-objdump [options] <input object files>
+
+OPTIONS:
+  -arch=<string>                   - Target arch to disassemble for, see -version for available targets
+  -cfg                             - Create a CFG for every function found in the object and write it to a graphviz file
+  -disassemble                     - Display assembler mnemonics for the machine instructions
+  -dsym=<string>                   - Use .dSYM file for debug info
+  -g                               - Print line information from debug info if available
+  -help                            - Display available options (-help-hidden for more)
+  -macho                           - Use MachO specific object file parser
+  -mattr=<a1,+a2,-a3,...>          - Target specific attributes
+  -mc-x86-disable-arith-relaxation - Disable relaxation of arithmetic instruction for X86
+  -no-show-raw-insn                - When disassembling instructions, do not print the instruction bytes.
+  -private-headers                 - Display format specific file headers
+  -r                               - Display the relocation entries in the file
+  -s                               - Display the content of each section
+  -section-headers                 - Display summaries of the headers for each section.
+  -stats                           - Enable statistics output from program (available with Asserts)
+  -symbolize                       - When disassembling instructions, try to symbolize operands.
+  -t                               - Display the symbol table
+  -triple=<string>                 - Target triple to disassemble for, see -version for available targets
+  -unwind-info                     - Display unwind information
+  -version                         - Display the version of this program
+  -x86-asm-syntax                  - Choose style of code to emit from X86 backend:
+    =att                           -   Emit AT&T-style assembly
+    =intel                         -   Emit Intel-style assembly
+  -yaml-cfg=<yaml output file>     - Create a CFG and write it as a YAML MCModule.

@@ -1,0 +1,17 @@
+digraph "CFG for 'xcalloc' function" {
+	label="CFG for 'xcalloc' function";
+
+	Node0x26aee00 [shape=record,label="{entry:\l  %nelem.addr = alloca i64, align 8\l  %elsize.addr = alloca i64, align 8\l  %newmem = alloca i8*, align 8\l  store i64 %nelem, i64* %nelem.addr, align 8\l  store i64 %elsize, i64* %elsize.addr, align 8\l  %0 = load i64* %nelem.addr, align 8\l  %cmp = icmp eq i64 %0, 0\l  br i1 %cmp, label %if.then, label %lor.lhs.false\l|{<s0>T|<s1>F}}"];
+	Node0x26aee00:s0 -> Node0x26aeec0;
+	Node0x26aee00:s1 -> Node0x26aee60;
+	Node0x26aee60 [shape=record,label="{lor.lhs.false:                                    \l  %1 = load i64* %elsize.addr, align 8\l  %cmp1 = icmp eq i64 %1, 0\l  br i1 %cmp1, label %if.then, label %if.end\l|{<s0>T|<s1>F}}"];
+	Node0x26aee60:s0 -> Node0x26aeec0;
+	Node0x26aee60:s1 -> Node0x26aef20;
+	Node0x26aeec0 [shape=record,label="{if.then:                                          \l  store i64 1, i64* %elsize.addr, align 8\l  store i64 1, i64* %nelem.addr, align 8\l  br label %if.end\l}"];
+	Node0x26aeec0 -> Node0x26aef20;
+	Node0x26aef20 [shape=record,label="{if.end:                                           \l  %2 = load i64* %nelem.addr, align 8\l  %3 = load i64* %elsize.addr, align 8\l  %call = call i8* @calloc(i64 %2, i64 %3)\l  store i8* %call, i8** %newmem, align 8\l  %4 = load i8** %newmem, align 8\l  %tobool = icmp ne i8* %4, null\l  br i1 %tobool, label %if.end3, label %if.then2\l|{<s0>T|<s1>F}}"];
+	Node0x26aef20:s0 -> Node0x26aefe0;
+	Node0x26aef20:s1 -> Node0x26aef80;
+	Node0x26aef80 [shape=record,label="{if.then2:                                         \l  %5 = load i64* %nelem.addr, align 8\l  %6 = load i64* %elsize.addr, align 8\l  %mul = mul i64 %5, %6\l  call void @xmalloc_failed(i64 %mul) #4\l  unreachable\l}"];
+	Node0x26aefe0 [shape=record,label="{if.end3:                                          \l  %7 = load i8** %newmem, align 8\l  ret i8* %7\l}"];
+}

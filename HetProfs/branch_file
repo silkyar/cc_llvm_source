@@ -1,0 +1,15 @@
+callq
+jmp 
+jne
+jg 
+je
+jl
+jz
+jnz
+jbe
+jmpq
+jae
+jbe
+jb
+ja
+

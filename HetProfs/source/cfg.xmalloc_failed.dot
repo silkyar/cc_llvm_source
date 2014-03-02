@@ -1,0 +1,6 @@
+digraph "CFG for 'xmalloc_failed' function" {
+	label="CFG for 'xmalloc_failed' function";
+
+	Node0x26a4470 [shape=record,label="{entry:\l  %size.addr = alloca i64, align 8\l  store i64 %size, i64* %size.addr, align 8\l  %0 = load %struct._IO_FILE** @stderr, align 8\l  %1 = load i8** @name, align 8\l  %2 = load i8** @name, align 8\l  %3 = load i8* %2, align 1\l  %conv = sext i8 %3 to i32\l  %tobool = icmp ne i32 %conv, 0\l  %cond = select i1 %tobool, i8* getelementptr inbounds ([3 x i8]* @.str1, i32 0, i32 0), i8* getelementptr inbounds ([1 x i8]* @.str2, i32 0, i32 0)\l  %4 = load i64* %size.addr, align 8\l  %call = call i32 (%struct._IO_FILE*, i8*, ...)* @fprintf(%struct._IO_FILE* %0, i8* getelementptr inbounds ([32 x i8]* @.str, i32 0, i32 0), i8* %1, i8* %cond, i64 %4)\l  call void @xexit(i32 1) #4\l  unreachable\l}"];
+	Node0x26a44d0 [shape=record,label="{return:                                           \l  ret void\l}"];
+}
