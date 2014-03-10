@@ -27,13 +27,24 @@
 
 #define CUMULATIVE_PROB 0
 #define PROB 0.6
-
+#define MIN_TRACE_SIZE 280
 using namespace llvm;
 using namespace std;
 
 typedef pair<string, string> BBlk;
 typedef pair<int, int> Addr;
 typedef map<BBlk, Addr> BBSizeMap;
+
+typedef struct {
+	list <BasicBlock*> BBLst;
+	double tripCount;
+	double size;
+} Trace;
+
+typedef struct {
+	list <BasicBlock*> headTraceLst;
+	double size;
+} ConTrace;
 
 namespace {
   class TraceGen : public FunctionPass {
@@ -48,8 +59,9 @@ namespace {
 		LoopInfo *LI;
 
 		map<BasicBlock*, list<BasicBlock*> > superBlocks;
-		map<int, list<BasicBlock*> > traces;
-		map<int, double> traceSizeMap;
+		map<BasicBlock*, Trace> traces;
+		map<BasicBlock*, ConTrace> conTraces;
+
     	BBSizeMap bbOffsetSizeMap;
 	
 		TraceGen() : FunctionPass(ID) {
@@ -202,13 +214,18 @@ namespace {
 			}
 
 			// merge superblocks to make traces of reasonable size
-			mergeSuperBlocks(&F, backEdges);
+			// mergeSuperBlocks(&F, backEdges);
 	
 			// print superblocks and clear for 
 			// next function
+			string funcName = (F.hasName()) ? F.getName() : "";
+			createTraces(&F, backEdges);
+			printTraces(funcName);
+			consolTraces(funcName);
 			printSuperBlocks(&F, backEdges);
 			superBlocks.clear();	
-
+			traces.clear();
+			conTraces.clear();
 			// delete for next function
 			delete execBBs;
 			delete unvisitedBBs;
@@ -325,20 +342,20 @@ namespace {
 		  	// no best predecessor is found if edge weight < threshold
 		  	double cur_prob = maxEdgeWeight/totalExFreq;
 		  	if (cur_prob < PROB) {
-			  log_reason( funcName, bbName, 4);
+			  log_reason( funcName, bbName, 1);
 		  	  return NULL;
 		  	}
 		
 		  	// if this edge is found in backEdge set, then this edge is a backedge
 		  	pair<const BasicBlock*, const BasicBlock*> tmpBackEdgeCheck(bestPredBB, currBB);
 		  	if (backEdges->find(tmpBackEdgeCheck) != backEdges->end()) {
-			  log_reason( funcName, bbName, 4);
+			  log_reason( funcName, bbName, 2);
 		  	  return NULL;
 		  	}
 	
 				
 		  	if (LI->getLoopFor(currBB) != LI->getLoopFor(bestPredBB)) {
-			  log_reason( funcName, bbName, 4);
+			  log_reason( funcName, bbName, 3);
 		  	  return NULL;
 		  	} 
 		
@@ -357,81 +374,165 @@ namespace {
 		  	cum_prob *= cur_prob;
 		  	return bestPredBB;
 		}
-	
-		void mergeSuperBlocks(Function *F, set<pair<const BasicBlock*, const BasicBlock*> >* backEdges) {
-			// Unique trace ID
-			static int traceID = 0;
-			double traceSize = 0;
+
+		void createTraces (Function *F, set<pair<const BasicBlock*, const BasicBlock*> >* backEdges) {
 			string funcName = F->hasName()?F->getName():"";
-			
-			for (map<BasicBlock*, list<BasicBlock*> >::iterator it_b = superBlocks.begin(); 
-					it_b != superBlocks.end(); it_b++) {
-				
-				string bbName = (it_b->first)->hasName() ? ((it_b->first))->getName() : "";
-				
-				double superBlockSize = (double)getSize(funcName, bbName);
-				
+			for (map<BasicBlock*, list<BasicBlock*> >::iterator it_b = superBlocks.begin();
+				it_b != superBlocks.end(); it_b++) {
+		
+				// get head of the superblock to check for loops	
 				BasicBlock* head = it_b->first;
-				BasicBlock* tail = NULL;
-				for(list<BasicBlock*>::iterator sp_b = (it_b->second).begin(); sp_b != (it_b->second).end();
-					sp_b++ ) {
-					tail = *sp_b;		
-					string bbName = (*sp_b)->hasName() ? (*sp_b)->getName() : "";
-					superBlockSize += getSize(funcName, bbName);
+				string bbName = head->hasName() ? head->getName() : "";
+				
+				// add to the size of the superblock
+				double superBlockSize = 0;
+				superBlockSize += (double) getSize(funcName, bbName);
+				
+				BasicBlock* tail;	
+				for (list<BasicBlock*>::iterator sp_b = (it_b->second).begin(), sp_e = (it_b->second).end();
+ 			        	sp_b != sp_e; ++sp_b) {
+						
+						// this basic block might have a backedge to the header
+						tail = *sp_b;
+						
+						string bbName = (*sp_b)->hasName() ? (*sp_b)->getName() : "";
+						
+						// add to the size of the superblock
+						superBlockSize += (double) getSize(funcName, bbName);
 				}
-			
-				// Check if the super block is a loop
+
+				// Check for loop
+				bool isLoop = false;
+				double loopDynSize = 0, tripCount = 0;
 				pair<const BasicBlock*, const BasicBlock*> tmpBackEdgeCheck(tail, head);
 				if (backEdges->find(tmpBackEdgeCheck) != backEdges->end()) {	
+					isLoop = true;
+					
 					double weightHeader = (double)PI->getExecutionCount(head);
-					double weightPreheader = 0.0;
-					/*for (pred_iterator pi = pred_begin(head); pi != pred_end(head); ++pi) {
-						weightPreheader += PI->getEdgeWeight(PI->getEdge(*pi, head));
-					}*/
 				
-					// subtract the weight of the backedge from the Header to get the weight of the preheader	
-					weightPreheader = weightHeader - (double)PI->getEdgeWeight(PI->getEdge(tail, head));
-					double tripCount = weightHeader/weightPreheader;
-				 	superBlockSize *= tripCount;
+					// subtract the weight of the backedge from the preheader	
+					double weightPreheader = weightHeader - (double)PI->getEdgeWeight(PI->getEdge(tail, head));
+					tripCount = weightHeader/weightPreheader;
+					
+					// For cases when the BB is not found in the dump and we do not have an
+					// estimate for the size
+					if (superBlockSize == 0 ) {
+						superBlockSize = 3;
+					}
+					loopDynSize = tripCount * superBlockSize;
 				}
-				
-				// Check if we can accommodate another superBlock into the 
-				// current trace
-				if (superBlockSize + traceSize > 315) {
-					// Start a new trace
-					traceSizeMap[traceID] = traceSize;
-					traceID++;
-					traceSize = 0;
-				}
-
-				// Update trace size
-				traces[traceID].push_back(it_b->first);
-				traces[traceID].insert(traces[traceID].end(), it_b->second.begin(), it_b->second.end());
-				traceSize += superBlockSize;
-			}
-
-			// Store the size before incrementing the traceID for the next function		
-			traceSizeMap[traceID] = traceSize;
-			traceID++;
-
-			printTraces(funcName);
-			traces.clear();	
+		
+				// make a copy of the superblock	
+				list<BasicBlock*> BBLst(it_b->second);
+				Trace newTR;
+				newTR.BBLst = BBLst;
+				newTR.tripCount = tripCount;
+			
+				if (isLoop) {
+					newTR.size = loopDynSize;
+				} else {
+					newTR.size = superBlockSize;
+				}	
+				traces[head] = newTR; 
+			}	
 		}
 
 		void printTraces(string funcName) {
-			map<int, list<BasicBlock*> >::iterator traceItr;
-			for(traceItr = traces.begin(); traceItr != traces.end(); traceItr++) {
-				consolTraceFile << traceItr->first << " ";
-				for(list<BasicBlock*>::iterator bbItr = (traceItr->second).begin(); 
-					bbItr != (traceItr->second).end(); bbItr++) {
-					string bbName = (*bbItr)->hasName() ? (*bbItr)->getName() : "";
-					consolTraceFile << funcName << " " << bbName << endl;
+			for(map<BasicBlock*, Trace>::iterator traceItr = traces.begin(); 
+				traceItr != traces.end(); traceItr++) {
+				Trace t = traceItr->second;
+				//consolTraceFile << t.tripCount << " " << t.size << " ";
+
+				string bbName = (traceItr->first)->hasName() ? 
+					(traceItr->first)->getName() : "";
+				
+				//consolTraceFile << bbName.c_str() << " ";
+				
+				for(list<BasicBlock*>::iterator BBItr = (t.BBLst).begin(); 
+					BBItr != (t.BBLst).end(); BBItr++) {
+					//consolTraceFile << (*BBItr) << " ";
 				}
-				consolTraceFile << traceSizeMap[traceItr->first];
-				consolTraceFile << endl;
+				//consolTraceFile << endl << endl;
 			}
 		}
+
+		void consolTraces(string funcName) {
+
+			consolTraceFile << funcName << "\n";
+			// Intialize the merge traces data structure
+			// Every consolidated trace contains a list of head BBs (key) of every
+			// trace present in it.
+			for(map<BasicBlock*, Trace>::iterator traceItr = traces.begin(); 
+				traceItr != traces.end(); traceItr++) {
+				consolTraceFile << " Here \n";				
+				list<BasicBlock*> traceLst(1,traceItr->first);
+				ConTrace newCT = {traceLst, (traceItr->second).size};
+				
+				conTraces.insert(make_pair(traceItr->first, newCT));
+			}
+
+			// Start the consolidation logic
+			for(map<BasicBlock*, ConTrace >::iterator conItr = conTraces.begin();
+					conItr != conTraces.end(); conItr++) {
+
+				consolTraceFile << conTraces.size() << "\n";	
+				ConTrace CT = conItr->second;
+				bool canGrow = true;
 	
+				string bbname = conItr->first->getName();
+				consolTraceFile << "Going to expand " << conItr->first << " " << bbname << "  " <<conItr->second.size << "\n";
+				while ((conItr->second.size < MIN_TRACE_SIZE) && (canGrow)) {
+					consolTraceFile << "Will start now\n";
+					// Get the last BB from the last trace present in ConTrace
+					BasicBlock* lstHeadBB = (CT.headTraceLst).back();
+					if (traces.find(lstHeadBB) == traces.end()) {
+						errs() << " There is no trace starting with this BB \n";
+						exit(1);
+					}
+					
+					BasicBlock* lstBB = (traces[lstHeadBB].BBLst.size() != 0) ?
+										traces[lstHeadBB].BBLst.back() : lstHeadBB;
+					
+					// Get the best successor trace for patching				
+					double maxSuccSBWeight = 0;
+					BasicBlock* patchBB = NULL;
+						
+					for (succ_iterator succIter = succ_begin(lstBB); succIter != succ_end(lstBB);	
+							succIter++) {
+						
+						consolTraceFile << (*succIter)->getName().str() << "\n";
+						if ((*succIter != conItr->first) && (conTraces.find(*succIter) !=  conTraces.end())) {
+							// There is a trace starting with the successor block							
+							consolTraceFile << "Pass\n";	
+							double succSBWeight = (double)PI->getEdgeWeight(PI->getEdge(lstBB, *succIter));
+							if (conTraces[*succIter].size < MIN_TRACE_SIZE && (maxSuccSBWeight < succSBWeight)) {
+								maxSuccSBWeight = succSBWeight;
+								patchBB = *succIter;
+								consolTraceFile << "Succ " << patchBB << "\n";
+							}
+						} 
+					}
+					
+					// patch the new trace
+					if (patchBB != NULL) {
+						
+						ConTrace pCT = conTraces[patchBB]; 
+						CT.headTraceLst.insert(CT.headTraceLst.end(), pCT.headTraceLst.begin(), pCT.headTraceLst.end());
+						CT.size += pCT.size;
+						conItr->second = CT;
+						string bbN = patchBB->getName();	
+						consolTraceFile << " Patching " << patchBB << " " << patchBB->getName().str() <<"\n" ;						
+						// remove the conTrace we just patched to make it no longer eligible 
+						// for anymore patching	
+						conTraces.erase(patchBB);
+					} else {
+						consolTraceFile << "Stopping \n";
+						canGrow = false;
+					}	
+				}
+			}
+		}
+
 		void log_reason(string f, string bb, int reason) {
 			logFile <<"Failure to expand: " <<  f << " " << bb << " " << reason << "\n";
 			return;
@@ -451,8 +552,8 @@ namespace {
 				traceFile << funcName << " " << bbName << "\n";
 				
 				// add to the size of the superblock
-				int superblock_size = 0;
-				superblock_size += getSize(funcName, bbName);
+				int superBlockSize = 0;
+				superBlockSize += getSize(funcName, bbName);
 				
 				BasicBlock* tail;	
 				
@@ -465,7 +566,8 @@ namespace {
 						traceFile << funcName << " " <<  bbName << "\n";
 					
 						// add to the size of the superblock
-						superblock_size += getSize(funcName, bbName);
+						superBlockSize += getSize(funcName, bbName);
+						traceFile <<  " adding" << superBlockSize;
 				}
 
 				bool isLoop = false;
@@ -486,12 +588,12 @@ namespace {
 					weightPreheader = weightHeader -(double)PI->getEdgeWeight(PI->getEdge(tail, head));
 					traceFile << "HELLO " << weightPreheader << " " << weightHeader << " ";
 					double tripCount = weightHeader/weightPreheader;
-					double loopDynSize = tripCount * superblock_size;
-					
+					double loopDynSize = tripCount * superBlockSize;
+					traceFile << tripCount << " " << superBlockSize << " ";
 					traceFile << "Loop encountered " << loopDynSize;
 				}
 				if (!isLoop) {
-					traceFile << superblock_size;
+					traceFile << superBlockSize;
 				}
 				traceFile << endl << endl;
 			}
