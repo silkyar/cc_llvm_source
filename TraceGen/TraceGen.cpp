@@ -18,6 +18,7 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "LAMP/LAMPLoadProfile.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include <fstream>
@@ -52,25 +53,50 @@ typedef struct {
 	double size;
 } ConTrace;
 
+string getBBName(BasicBlock* BB) {
+			string bbName = "";
+			if(BB->hasName()) {
+				bbName = BB->getName();
+			}
+			return bbName;
+		}
+map <BasicBlock*, int> BBOrderedMap;
+
+struct cmpBBByPostOrder {
+	bool operator() (BasicBlock* const a, BasicBlock* const b) const {
+		ofstream cmpfile;
+		if ((BBOrderedMap.find(a) == BBOrderedMap.end())) {
+			errs() << "BB not in postorder map for comparison\n";
+			return 0;
+		} 
+		else if((BBOrderedMap.find(b) == BBOrderedMap.end()) ) {
+			errs() << "BB not in postorder map for comparison\n";
+			return 0;
+		}
+		return BBOrderedMap[a] < BBOrderedMap[b]; 
+	}
+};
+map<BasicBlock*, Trace> allTraces;
+map<Function*, map<BasicBlock*, ConTrace, cmpBBByPostOrder> > funcConTraceMap;
+
 namespace {
-  class TraceGen : public FunctionPass {
+  class TraceGen : public ModulePass {
 
 	public:
     	static char ID; // Pass identification, replacement for typeid
 
-		ofstream traceFile, logFile, consolTraceFile;
+		ofstream traceFile, logFile, consolTraceFile, interFuncLogFile;
 		ifstream bbFile;
 
 		ProfileInfo *PI;
 		LoopInfo *LI;
 
 		map<BasicBlock*, list<BasicBlock*> > superBlocks;
-		map<BasicBlock*, Trace> traces;
-		map<BasicBlock*, ConTrace> conTraces;
-
+		map<BasicBlock*, Trace, cmpBBByPostOrder> traces;
+		map<BasicBlock*, ConTrace, cmpBBByPostOrder> conTraces;
     	BBSizeMap bbOffsetSizeMap;
 	
-		TraceGen() : FunctionPass(ID) {
+		TraceGen() : ModulePass(ID) {
 			char bbFilePath[1024], bbFileName[]="/bb_offset_out_x86_32.txt";
 			if(getcwd(bbFilePath, sizeof(bbFilePath))!=NULL) {
 				strcat(bbFilePath, bbFileName);
@@ -107,6 +133,9 @@ namespace {
 		
 				// Open file to write traces
 				consolTraceFile.open("consolTraceFile.txt", ios::out);
+
+				// opem tje inter func log file
+				interFuncLogFile.open("interFuncLogFile.txt", ios::out);
 			}
 		}
 
@@ -116,125 +145,153 @@ namespace {
 			consolTraceFile.close();
 		}
 
-		virtual bool runOnFunction(Function &F) {
-			PI = &getAnalysis<ProfileInfo>();
-			LI = &getAnalysis<LoopInfo>();
 
-			map<double,list<BasicBlock*> >* execBBs = 
-    			new map<double, list<BasicBlock*> >();
-
-			// get function name
-			string funcName = (F.hasName()) ? F.getName() : "";
- 	 		
-			// stores the set of unvisited BBs
-  			set<BasicBlock*>* unvisitedBBs =
-    			new set<BasicBlock*>();
-
-  			// stores the set of backedges described as (from, to) pair
-  			set<pair<const BasicBlock*, const BasicBlock*> >* backEdges =
-    			new set<pair<const BasicBlock*, const BasicBlock*> >();
-
-  			// retrieve all backedges contained in this current function
-  			SmallVector<pair<const BasicBlock*, const BasicBlock*> , 64> backEdgesVector;
-  			FindFunctionBackedges(F, backEdgesVector);
-
-  			// transfer everything from backEdgesVector to backEdges
-  			backEdges->insert(backEdgesVector.begin(), backEdgesVector.end());
-			
-  			// insert all the BBs in this function into set of unvisitedBBs
-  			for (Function::iterator funcIter = F.begin(), funcIterEnd = F.end();
-       			funcIter != funcIterEnd; ++funcIter) {
-    			// gets number of instructions in this BB
-				BasicBlock* BB = &(*funcIter);
-    			double execCount = PI->getExecutionCount(BB);
-    			map<double, list<BasicBlock*> >::iterator it = execBBs->find(execCount);
-    			if (it == execBBs->end()) {
-    			  list<BasicBlock*> arg(1, funcIter);
-    			  execBBs->insert(pair<double, list<BasicBlock*> >(execCount, arg));
-    			} else {
-    			  it->second.push_back(funcIter);
-    			}
-
-    			unvisitedBBs->insert(funcIter);
-  			}
-			
-  			// traverse each BB in descending order of their execution counts
-  			for (map<double, list<BasicBlock*> >::reverse_iterator arg_b = execBBs->rbegin(), 
-				arg_e = execBBs->rend(); arg_b != arg_e; ++arg_b) {
-				if (arg_b->first == 0) {
-					continue;	
-				}
-    			for (list<BasicBlock*>::iterator cur_b = arg_b->second.begin(), 
-					cur_e = arg_b->second.end(); cur_b != cur_e; ++cur_b) {
-					if (unvisitedBBs->find(*cur_b) == unvisitedBBs->end()) {
-    			    	continue;
-    			  	}
-
-      				// use this current BB as seed and remove from set
-      				unvisitedBBs->erase(*cur_b);
-			
-      				list<BasicBlock*> trace;
-     				list<BasicBlock*>::iterator traceIter;
-
-     			 	trace.push_back(*cur_b);
-
-     			 	// run trace selection algorithm
-     			 	BasicBlock* currBB = *cur_b;
-     			 	BasicBlock* nextBB;
-     			 	double cum_prob = 1;
-
-     			 	// grow trace forward
-     			 	while (1) {
-						nextBB = bestSuccessor(currBB, cum_prob, unvisitedBBs, backEdges, funcName);
-						if (nextBB == NULL) {
-     			     		break;
-						}
-						trace.push_back(nextBB);
-						unvisitedBBs->erase(nextBB);
-						currBB = nextBB;
-      				}
-
-					// start creating backwards from current BB again
-     			 	currBB = *cur_b;
-     			 	// grow trace backwards
-     			 	while (1) {
-     			   		nextBB = bestPredecessor(currBB, cum_prob, unvisitedBBs, backEdges, funcName);
-     			   		if (nextBB == NULL) {
-							break;
-     			  	 	}
-						trace.push_front(nextBB);     
-						unvisitedBBs->erase(nextBB);
-						currBB = nextBB;
-					}
-				
-      				// record our newly found superblock
-      				// we don't record superblocks of size 1
-      				//if (trace.front() != trace.back()) {
-        			BasicBlock* head = trace.front();
-        			trace.pop_front();
-					superBlocks[head] = trace;
-				}
-			}
-
-
-			// Create traces and consolidate small traces	
-			createTraces(funcName, backEdges);
-			consolTraces(funcName, backEdges);
-			//printConsolTraces(funcName);
-	
-			superBlocks.clear();	
-			traces.clear();
-			conTraces.clear();
-		
-			// delete for next function
-			delete execBBs;
-			delete unvisitedBBs;
-			delete backEdges;
-
-			return false;
+		virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+	    	AU.setPreservesAll();
+		 	AU.addRequired<ProfileInfo>();
+		 	AU.addRequired<LoopInfo>();
 		}
 
+		virtual bool runOnModule(Module &M) {
+			PI = &getAnalysis<ProfileInfo>();
+
+			for(Module::iterator mI = M.begin(); mI != M.end(); mI++) {
+				Function *F = &(*mI);
+				if(F->isDeclaration()) {
+					continue;
+				}
+				getBasicBlocksInOrder(F);
+				LI = &getAnalysis<LoopInfo>(*F);
+
+				map<double,list<BasicBlock*> >* execBBs = 
+	    			new map<double, list<BasicBlock*> >();
+	
+				// get function name
+				string funcName = (F->hasName()) ? F->getName() : "";
+	 	 		
+				// stores the set of unvisited BBs
+	  			set<BasicBlock*>* unvisitedBBs =
+	    			new set<BasicBlock*>();
+	
+	  			// stores the set of backedges described as (from, to) pair
+	  			set<pair<const BasicBlock*, const BasicBlock*> >* backEdges =
+	    			new set<pair<const BasicBlock*, const BasicBlock*> >();
+	
+	  			// retrieve all backedges contained in this current function
+	  			SmallVector<pair<const BasicBlock*, const BasicBlock*> , 64> backEdgesVector;
+	  			FindFunctionBackedges(*F, backEdgesVector);
+	
+	  			// transfer everything from backEdgesVector to backEdges
+	  			backEdges->insert(backEdgesVector.begin(), backEdgesVector.end());
+				
+	  			// insert all the BBs in this function into set of unvisitedBBs
+	  			for (Function::iterator funcIter = F->begin(), funcIterEnd = F->end();
+	       			funcIter != funcIterEnd; ++funcIter) {
+	    			// gets number of instructions in this BB
+					BasicBlock* BB = &(*funcIter);
+	    			double execCount = PI->getExecutionCount(BB);
+	    			map<double, list<BasicBlock*> >::iterator it = execBBs->find(execCount);
+	    			if (it == execBBs->end()) {
+	    			  list<BasicBlock*> arg(1, funcIter);
+	    			  execBBs->insert(pair<double, list<BasicBlock*> >(execCount, arg));
+	    			} else {
+	    			  it->second.push_back(funcIter);
+	    			}
+	
+	    			unvisitedBBs->insert(funcIter);
+	  			}
+				
+	  			// traverse each BB in descending order of their execution counts
+	  			for (map<double, list<BasicBlock*> >::reverse_iterator arg_b = execBBs->rbegin(), 
+					arg_e = execBBs->rend(); arg_b != arg_e; ++arg_b) {
+					if (arg_b->first == 0) {
+						continue;	
+					}
+	    			for (list<BasicBlock*>::iterator cur_b = arg_b->second.begin(), 
+						cur_e = arg_b->second.end(); cur_b != cur_e; ++cur_b) {
+						if (unvisitedBBs->find(*cur_b) == unvisitedBBs->end()) {
+	    			    	continue;
+	    			  	}
+	
+	      				// use this current BB as seed and remove from set
+	      				unvisitedBBs->erase(*cur_b);
+				
+	      				list<BasicBlock*> trace;
+	     				list<BasicBlock*>::iterator traceIter;
+	
+	     			 	trace.push_back(*cur_b);
+	
+	     			 	// run trace selection algorithm
+	     			 	BasicBlock* currBB = *cur_b;
+	     			 	BasicBlock* nextBB;
+	     			 	double cum_prob = 1;
+	
+	     			 	// grow trace forward
+	     			 	while (1) {
+							logFile << "Front ";
+							nextBB = bestSuccessor(currBB, cum_prob, unvisitedBBs, backEdges, funcName);
+							if (nextBB == NULL) {
+	     			     		break;
+							}
+							trace.push_back(nextBB);
+							unvisitedBBs->erase(nextBB);
+							currBB = nextBB;
+	      				}
+	
+						// start creating backwards from current BB again
+	     			 	currBB = *cur_b;
+	     			 	// grow trace backwards
+	     			 	while (1) {
+							logFile << "Back ";
+	     			   		nextBB = bestPredecessor(currBB, cum_prob, unvisitedBBs, backEdges, funcName);
+	     			   		if (nextBB == NULL) {
+								break;
+	     			  	 	}
+							trace.push_front(nextBB);     
+							unvisitedBBs->erase(nextBB);
+							currBB = nextBB;
+						}
+					
+	      				// record our newly found superblock
+	      				// we don't record superblocks of size 1
+	        			BasicBlock* head = trace.front();
+	        			trace.pop_front();
+						superBlocks[head] = trace;
+					}
+				}
+	
+	
+				// Create traces and consolidate small traces	
+				createTraces(funcName, backEdges);
+				consolTraces(funcName, backEdges);
+				printConsolTraces(funcName);
+	
+				// logging
+				allTraces.insert(traces.begin(), traces.end());
+				funcConTraceMap.insert(make_pair(F, conTraces));
+
+				// copy the traces to allTraces before clearing
+				// copyTracesForInterFuncTracing(&F);
+	
+				// clear this function's maps
+				superBlocks.clear();	
+				traces.clear();
+				conTraces.clear();
+	
+				// delete for next function
+				delete execBBs;
+				delete unvisitedBBs;
+				delete backEdges;
+			}
+
+			for(Module::iterator mI = M.begin(); mI != M.end(); mI++) {
+				createOrderedTraces(&(*mI));
+			}
 			
+			return false;
+		}
+		
+	
 		BasicBlock* bestSuccessor(BasicBlock* currBB,
 			double& cum_prob, set<BasicBlock*>* unvisitedBBs,
 			set<pair<const BasicBlock*, const BasicBlock*> >* backEdges,
@@ -447,6 +504,26 @@ namespace {
 			}
 		}
 
+		
+		
+		string getFName(Function* F) {
+			string FName = "";
+			if(F->hasName()) {
+				FName = F->getName();
+			}
+			return FName;
+		}
+		
+		void getBasicBlocksInOrder(Function* F) {
+			static int id = 0;
+			ReversePostOrderTraversal<Function*> RPOT(F);
+			for(ReversePostOrderTraversal<Function*>::rpo_iterator RI = RPOT.begin();
+				RI != RPOT.end(); RI++) {
+				BasicBlock* BB = *RI;
+				BBOrderedMap.insert(make_pair(BB, id++));
+			}
+		}
+		
 		void consolTraces(string funcName, set<pair<const BasicBlock*, const BasicBlock*> >* backEdges) {
 
 			consolTraceFile << funcName << "\n";
@@ -461,165 +538,277 @@ namespace {
 				
 				conTraces.insert(make_pair(traceItr->first, newCT));
 			}
-			printConsolTraces(funcName);
-
-			// Start the consolidation logic
-			for(map<BasicBlock*, ConTrace >::iterator conItr = conTraces.begin();
-					conItr != conTraces.end(); conItr++) {
-
-				ConTrace CT = conItr->second;
-				bool canGrow = true;
-
-				// logging	
-				consolTraceFile << "Consol " << " " << conItr->first->getName().str() 
-					<< "  " << conItr->second.size << "\n";
-				
-				while ((conItr->second.size < MIN_TRACE_SIZE) && (canGrow)) {
-					// Get the last BB from the last trace present in ConTrace
-					BasicBlock* lstHeadBB = (CT.headTraceLst).back();
-
-					if (traces.find(lstHeadBB) == traces.end()) {
-						errs() << "There is no trace starting with this BB \n";
-						errs() << "This shouldn't happen \n";
-						exit(1);
-					}
-					
-					BasicBlock* lstBB = (traces[lstHeadBB].BBLst.size() != 0) ?
-										traces[lstHeadBB].BBLst.back() : lstHeadBB;
-					
-					// logging
-					consolTraceFile << "Last BB " << lstBB->getName().str() << endl;
-					
-					// Get the best successor trace for patching				
-					double maxSuccSBWeight = 0;
-					BasicBlock* patchBB = NULL;
-						
-					for (succ_iterator succIter = succ_begin(lstBB); succIter != succ_end(lstBB);	
-							succIter++) {
-					
-						// logging	
-						consolTraceFile << "Successor: " << (*succIter)->getName().str();
-						
-						if (conTraces.find(*succIter) !=  conTraces.end() &&
-							 ((*succIter) != lstHeadBB))  {
-							// There is a trace starting with the successor block and it is not 
-							// the same trace that we are working on	
+			// printConsolTraces(funcName);
 			
-							double succSBWeight = (double)PI->getEdgeWeight(PI->getEdge(lstBB, *succIter));
-							
-							// logging
-							consolTraceFile <<  " EW: " << succSBWeight << 
-								" Size: " << conTraces[*succIter].size << endl;
-						
-							// Patch the best successor	
-							if (conTraces[*succIter].size < MIN_TRACE_SIZE && (maxSuccSBWeight < succSBWeight)) {
-								maxSuccSBWeight = succSBWeight;
-								patchBB = *succIter;
-							}
-						} 
-					}
+			// We want to keep growing the traces till no more traces can be patched
+			bool patched_it;
+
+			do {
+				patched_it = false;
+				// Start the consolidation logic
+				for(map<BasicBlock*, ConTrace >::iterator conItr = conTraces.begin();
+						conItr != conTraces.end(); conItr++) {
+
+					ConTrace CT = conItr->second;
+					bool canGrow = true;
+				
+					// logging	
+					consolTraceFile << "Consol " << " " << conItr->first->getName().str() 
+						<< "  " << conItr->second.size << "\n";
 					
-					// patch the new trace
-					if ((patchBB != NULL) ) {
+					while ((conItr->second.size < MIN_TRACE_SIZE) && (canGrow)) {
+						// Get the last BB from the last trace present in ConTrace
+						BasicBlock* lstHeadBB = (CT.headTraceLst).back();
 
-						// if patchBB was a product of a backedge, there is nothing to consolidate
-						if (patchBB == conItr->first) {
-							consolTraceFile << "BE**\n";
-							canGrow = false;
+						if (traces.find(lstHeadBB) == traces.end()) {
+							errs() << "There is no trace starting with this BB \n";
+							errs() << "This shouldn't happen \n";
+							exit(1);
 						}
-		
-						// check if we are missing out on a trace which is more likely to reach the patchBB,
-						// than the current one. In that case, we should wait for the other trace to patch
-						// this trace up.
-						double maxEdgeWeight = 0;
-						BasicBlock* prefBB = NULL;
-						bool isLoop = (traces[patchBB].tripCount > 1) ? true : false;
-						for (pred_iterator predIter = pred_begin(patchBB); predIter != pred_end(patchBB);
-							predIter++ ) {
-							double edgeWeight = PI->getEdgeWeight(PI->getEdge(*predIter, patchBB));
+						
+						BasicBlock* lstBB = (traces[lstHeadBB].BBLst.size() != 0) ?
+											traces[lstHeadBB].BBLst.back() : lstHeadBB;
+						
+						// logging
+						consolTraceFile << "Last BB " << lstBB->getName().str() << endl;
+						
+						// Get the best successor trace for patching				
+						double maxSuccSBWeight = 0;
+						BasicBlock* patchBB = NULL;
 							
-							// logging
-							consolTraceFile << "Pred: " << (*predIter)->getName().str() << 
-								" Edge weight: "<< edgeWeight << endl;
-
-							// if this patchBB is header of a loop, then disregard the backedge predecessor
-							// we don't want to consider it since the size of the loop is too small and 
-							// growing the trace is more beneficial.
-					 		pair<const BasicBlock*, const BasicBlock*> tmpBackEdgeCheck(*predIter, patchBB);	
-							consolTraceFile << isLoop <<"\n";	
-							if(isLoop && (backEdges->find(tmpBackEdgeCheck) != backEdges->end())) {
+						for (succ_iterator succIter = succ_begin(lstBB); succIter != succ_end(lstBB);	
+								succIter++) {
+						
+							// logging	
+							consolTraceFile << "Successor: " << (*succIter)->getName().str();
+							
+							if (conTraces.find(*succIter) !=  conTraces.end() &&
+								 ((*succIter) != lstHeadBB))  {
+								// There is a trace starting with the successor block and it is not 
+								// the same trace that we are working on	
+				
+								double succSBWeight = (double)PI->getEdgeWeight(PI->getEdge(lstBB, *succIter));
+								
 								// logging
-								consolTraceFile << "Disregarding BE \n";
+								consolTraceFile <<  " EW: " << succSBWeight << 
+									" Size: " << conTraces[*succIter].size << endl;
+							
+								// Patch the best successor	
+								if (conTraces[*succIter].size < MIN_TRACE_SIZE && (maxSuccSBWeight < succSBWeight)) {
+									maxSuccSBWeight = succSBWeight;
+									patchBB = *succIter;
+								}
+							} 
+						}
+						
+						// patch the new trace
+						if ((patchBB != NULL) ) {
+
+							// if patchBB was a product of a backedge, there is nothing to consolidate
+							if (patchBB == conItr->first) {
+								consolTraceFile << "BE**\n";
+								canGrow = false;
+							}
+			
+							// check if we are missing out on a trace which is more likely to reach the patchBB,
+							// than the current one. In that case, we should wait for the other trace to patch
+							// this trace up.
+							double maxEdgeWeight = 0;
+							BasicBlock* prefBB = NULL;
+							bool isLoop = (traces[patchBB].tripCount > 1) ? true : false;
+							for (pred_iterator predIter = pred_begin(patchBB); predIter != pred_end(patchBB);
+								predIter++ ) {
+								double edgeWeight = PI->getEdgeWeight(PI->getEdge(*predIter, patchBB));
+								
+								// logging
+								consolTraceFile << "Pred: " << (*predIter)->getName().str() << 
+									" Edge weight: "<< edgeWeight << endl;
+
+								// if this patchBB is header of a loop, then disregard the backedge predecessor
+								// we don't want to consider it since the size of the loop is too small and 
+								// growing the trace is more beneficial.
+						 		pair<const BasicBlock*, const BasicBlock*> tmpBackEdgeCheck(*predIter, patchBB);	
+								consolTraceFile << isLoop <<"\n";	
+								if(isLoop && (backEdges->find(tmpBackEdgeCheck) != backEdges->end())) {
+									// logging
+									consolTraceFile << "Disregarding BE \n";
+									continue;
+								}
+	
+								// update the preferred predecessor
+								if (edgeWeight > maxEdgeWeight) {
+									prefBB = *predIter;
+									maxEdgeWeight = edgeWeight;
+								} 
+							}	
+
+							// logging
+							consolTraceFile << "Preferred Pred: " << prefBB->getName().str() << endl;	
+							
+							// If the lstBB is not the preferred predecessor, then do not patch
+							if (prefBB != lstBB) {
+								consolTraceFile << lstBB->getName().str() << " " << prefBB->getName().str() <<"\n";
+								canGrow = false;
 								continue;
 							}
-	
-							// update the preferred predecessor
-							if (edgeWeight > maxEdgeWeight) {
-								prefBB = *predIter;
-								maxEdgeWeight = edgeWeight;
-							} 
-						}	
+			
+							// logging	
+							consolTraceFile << "Patching: "<< patchBB->getName().str() << endl;
+							patched_it = true;	
+					
+							if (patchBB != conItr->first) {	
+								// update the trace	
+								CT.headTraceLst.insert(CT.headTraceLst.end(), 
+									conTraces[patchBB].headTraceLst.begin(), conTraces[patchBB].headTraceLst.end());
+								CT.size += conTraces[patchBB].size;
+							} else {
+								// since this is a loop, size should take in the trip count into account
+								// TODO: How to get trip count in the middle of the loop. 	
+							}
 
-						// logging
-						consolTraceFile << "Preferred Pred: " << prefBB->getName().str() << endl;	
-						
-						// If the lstBB is not the preferred predecessor, then do not patch
-						if (prefBB != lstBB) {
-							consolTraceFile << lstBB->getName().str() << " " << prefBB->getName().str() <<"\n";
-							canGrow = false;
-							continue;
-						}
-		
-						// logging	
-						consolTraceFile << "Patching: "<< patchBB->getName().str() << endl;	
-				
-						if (patchBB != conItr->first) {	
-							// update the trace	
-							CT.headTraceLst.insert(CT.headTraceLst.end(), 
-								conTraces[patchBB].headTraceLst.begin(), conTraces[patchBB].headTraceLst.end());
-							CT.size += conTraces[patchBB].size;
+							// If the edge of between the lstBB reached the 
+							conItr->second = CT;
+							
+							// remove the conTrace we just patched to make it no longer eligible 
+							// for anymore patching	
+							conTraces.erase(patchBB);
 						} else {
-							// since this is a loop, size should take in the trip count into account
-							// TODO: How to get trip count in the middle of the loop. 	
-						}
-
-						// If the edge of between the lstBB reached the 
-						conItr->second = CT;
-						
-						// remove the conTrace we just patched to make it no longer eligible 
-						// for anymore patching	
-						conTraces.erase(patchBB);
-					} else {
-						canGrow = false;
-					}	
+							canGrow = false;
+						}	
+					}
 				}
-			}
+			} while(patched_it);
 		}
 
 		void printConsolTraces(string funcName) {
 			if (conTraces.size() == 0) 
 				return;
-
-
+			
 			for(map<BasicBlock*, ConTrace>::iterator conTItr = conTraces.begin(); 
 				conTItr != conTraces.end(); conTItr++ ) {
 				list<BasicBlock*> headTraceLst = conTItr->second.headTraceLst;
 				if (conTItr->second.size > double(MIN_TRACE_SIZE)) {
 				// Iterate all the head basic block of all traces
 					traceFile << "Function " << funcName << endl;
+					traceFile << conTItr->second.size << endl;	
 					for (list<BasicBlock*>::iterator headItr = headTraceLst.begin();
 						headItr != headTraceLst.end(); headItr++) {
-						traceFile << (*headItr)->getName().str() << " ";
+						traceFile << "--" << (*headItr)->getName().str() << " ";
 
 						// Iterate all basic blocks in every trace
 						for(list<BasicBlock*>::iterator traceItr = traces[*headItr].BBLst.begin();
 							traceItr != traces[*headItr].BBLst.end(); traceItr++) {
 							traceFile << (*traceItr)->getName().str() << " " ;			
 						}
-					 	traceFile << conTItr->second.size << endl;	
+					}
+					traceFile << "\n";
+				}
+			}
+		}
+
+
+		void createOrderedTraces(Function *F) {
+			
+			map<BasicBlock*, ConTrace> conTrace;
+			if (funcConTraceMap.find(F) != funcConTraceMap.end()) {
+				conTrace.insert(funcConTraceMap[F].begin(), 
+					funcConTraceMap[F].end());
+			}
+					
+			if (conTrace.size() == 0) {
+				return;
+			}
+	
+			traceFile << "Function: " << getFName(F).c_str() << " " << conTrace.size() \
+				<< endl;
+			list<BasicBlock*> traceBB;
+			for(map<BasicBlock*, ConTrace>::iterator conTItr = conTrace.begin(); 
+				conTItr != conTrace.end(); conTItr++ ) {
+				
+				list<BasicBlock*> headTraceLst = conTItr->second.headTraceLst;
+
+				if (conTItr->second.size > double(MIN_TRACE_SIZE)) {
+
+					// Iterate all the head basic block of all traces
+					for (list<BasicBlock*>::iterator headItr = headTraceLst.begin();
+						headItr != headTraceLst.end(); headItr++) {
+						traceBB.push_back(*headItr);
+						
+						// Iterate all basic blocks in every trace
+						for(list<BasicBlock*>::iterator traceItr = allTraces[*headItr].BBLst.begin();
+							traceItr != allTraces[*headItr].BBLst.end(); traceItr++) {
+							traceBB.push_back(*traceItr);
+						}
+
+					}
+					
+					// Sort by post traversal order
+					traceBB.sort(cmpBBByPostOrder());
+					for(list<BasicBlock*>::iterator BI = traceBB.begin(); 
+						BI != traceBB.end(); BI++) {
+						traceFile << getBBName(*BI).c_str() << "\n";
+					}
+					traceFile << endl;
+
+					// Get the predecessors of the BB at the head of the trace.
+					// It is a switch point
+					
+					BasicBlock *head = traceBB.front();
+					
+					for(pred_iterator pi = pred_begin(head); pi != pred_end(head);
+						pi++) {
+
+						// Don't consider the BEs						
+						pair<const BasicBlock*, const BasicBlock*> tmpBackEdgeCheck(head, *pi);
+						if (backEdges->find(tmpBackEdgeCheck) != backEdges->end()) {
+							continue;
+						}
+	
+						traceFile << "Head Pred " << getBBName(*pi).c_str() << "\n";
+					}
+
+					 isLoop = true;
+					// Insert an instruction at the end of the trace to stop
+					// profiling the characteristics. For this, get the successors
+					// of tail of the trace
+					
+					BasicBlock *tail = traceBB.back();
+					
+					for(succ_iterator si = succ_begin(tail); si != succ_end(tail);
+						si++) {
+
+						// Don't consider the BEs
+						pair<const BasicBlock*, const BasicBlock*> tmpBackEdgeCheck(*si, tail);
+						if (backEdges->find(tmpBackEdgeCheck) != backEdges->end()) {
+							continue;
+						}
+
+						traceFile << "Tail succ " << getBBName(*si).c_str() << "\n";
+					}
+					
+					
+					traceBB.clear();
+				}
+			}
+		}
+
+		void copyTracesForInterFuncTracing(Function *F) {
+			map <BasicBlock*, ConTrace, cmpBBByPostOrder> conMap;
+
+			for(map<BasicBlock*, ConTrace>::iterator conTItr = conTraces.begin(); 
+				conTItr != conTraces.end(); conTItr++ ) {
+				if (conTItr->second.size > double(MIN_TRACE_SIZE)) {
+					// Keep this conTrace
+					conMap.insert(pair <BasicBlock*, ConTrace> (conTItr->first, conTItr->second));
+					list<BasicBlock*> headTraceLst = conTItr->second.headTraceLst;
+					// Keep the corresponding traces
+					for (list<BasicBlock*>::iterator headItr = headTraceLst.begin();
+						headItr != headTraceLst.end(); headItr++) {
+						allTraces.insert(pair <BasicBlock*, Trace> (*headItr, traces[*headItr]));
 					}
 				}
 			}
+			funcConTraceMap.insert(make_pair(F,conMap));
 		}
 
 		void log_reason(string f, string bb, int reason) {
@@ -695,13 +884,34 @@ namespace {
 			}
 			return 0;	
 		}
-	
-		virtual void getAnalysisUsage(AnalysisUsage &AU) const {
-	    	AU.setPreservesAll();
-		 	AU.addRequired<ProfileInfo>();
-		 	AU.addRequired<LoopInfo>();
+		
+		void checkCalledFuncs(Function *F) {
+
+			for(Function::iterator FI = F->begin(); FI != F->end(); FI++) {
+				BasicBlock *BB = &(*FI);
+				for(BasicBlock::iterator BI = BB->begin(); BI != BB->end(); BI++) {
+
+					Instruction* I = &(*BI);
+
+					if (isa<CallInst>(I)) {
+						CallInst* CI = dyn_cast<CallInst>(I);
+						Function* CF = CI->getCalledFunction();
+
+						if(F) { // F is NULL for indirect calls
+							interFuncLogFile << getFName(F).c_str() << " " <<  getBBName(BB).c_str() << " calls " 
+								<< getFName(CF).c_str() << "\n";	
+							if(funcConTraceMap.find(CF) != funcConTraceMap.end()) {
+								interFuncLogFile << "Found the trace of callee\n";
+							}
+						} else {
+							errs() << "*** Indirect call ***\n\n";
+						}
+					}
+				}
+			}				
 		}
-  };
+	
+	};
 }
 
 char TraceGen::ID = 0;
