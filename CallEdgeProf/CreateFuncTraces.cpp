@@ -27,6 +27,8 @@
 #include "llvm/IR/TypeBuilder.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Analysis/CallGraph.h"
+#include "llvm/ADT/SCCIterator.h"
+#include "llvm/Transforms/Utils/UnifyFunctionExitNodes.h"
 
 #include <iostream>
 #include <fstream>
@@ -42,7 +44,7 @@ using namespace std;
 
 namespace {
 
-	struct CreateFuncTraces : public CallGraphSCCPass {
+	struct CreateFuncTraces : public ModulePass {
 
 		static char ID;
 		static int funcId;	
@@ -60,6 +62,11 @@ namespace {
 		map<pair<string, string>, int>BBToSizeMap;
 		map<Function*, double>FuncToDynSizeMap;
 		map<string, unsigned>FuncToCallIdMap;
+		map<pair<string, string>, int>BBToAddrMap;
+
+
+		// Function trace list
+		list<Function*>FuncTraceList;
 
 		// Analysis
 		ProfileInfo* PI;
@@ -67,7 +74,7 @@ namespace {
 		// Files
 		ofstream log, traceFile, err;
 	
-		CreateFuncTraces() : CallGraphSCCPass(ID) {
+		CreateFuncTraces() : ModulePass(ID) {
 			// Open files for writing
 			openOutFiles();
 			
@@ -75,24 +82,13 @@ namespace {
 			loadDynCallInfo();	
 
 			// Load BB sizes
-			loadBBSizes();
+			loadSizesAndPCs();
 
 			// Load func and CallSite ids
 			loadFuncCallIds();
 		}
 		
 		~CreateFuncTraces() {
-			// fix traces
-			// fixParentChildTraces();
-	
-			// Print the final graph
-			for (map<Function*, double>::iterator FItr = FuncToDynSizeMap.begin(); FItr != FuncToDynSizeMap.end();
-				FItr++) {
-				double size = FItr->second;
-				if (size  > MIN_TRACE_SIZE) {
-					traceFile << getFName(FItr->first).c_str() << " " << size << "\n";
-				}
-			}
 			closeOutFiles();
 			cleanup();
 		}
@@ -128,15 +124,30 @@ namespace {
 			AU.setPreservesAll();
 			AU.addRequired<CallGraph>();
 			AU.addRequired<ProfileInfo>();
+			AU.addRequired<UnifyFunctionExitNodes>();
 		}
 
-		virtual bool runOnSCC(CallGraphSCC& SCC) {
+		virtual bool runOnModule(Module& M) {
+			CallGraph &CG = getAnalysis<CallGraph>();
+			for(scc_iterator<CallGraph*> CGI = scc_begin(&CG); CGI != scc_end(&CG);	
+				CGI++) {
+				CallGraphSCC curSCC(&CGI);
+				std::vector<CallGraphNode*> &NodeVec = *CGI;
+				curSCC.initialize(&NodeVec[0], &NodeVec[0]+NodeVec.size());
+				runPassOnSCC(curSCC);
+			}
+		
+			fixParentChildTraces(CG);
+			printTracePCs();
+			return false;
+		}
+	
+		bool runPassOnSCC(CallGraphSCC& SCC) {
 			// Get edge profile information
 			PI = &getAnalysis<ProfileInfo>();
-
 			for (CallGraphSCC::iterator I = SCC.begin(), E = SCC.end(); I != E; ++I) {
     			Function *F = (*I)->getFunction();
-    			
+    				
 				if (F && !F->isDeclaration()) {
 					// Estimate the dynamic number of instructions executed in this function
 					double dynFSize = estimateDynFuncSize(F);
@@ -145,7 +156,6 @@ namespace {
 					runMerge(F);
 				}	
   			}	
-
 			return true;
 		 }
 
@@ -247,15 +257,25 @@ namespace {
 			}
 		}*/
 
-		bool fixParentChildTraces() {
-			CallGraph &CG = getAnalysis<CallGraph>();
 
-			list<Function*>funcTraceList;
+		bool printFuncTraces() {
 			for (map<Function*, double>::iterator FItr = FuncToDynSizeMap.begin(); 
 				FItr != FuncToDynSizeMap.end(); FItr++) {
 				double size = FItr->second;
 				if (size  > MIN_TRACE_SIZE) {
-					funcTraceList.push_back(FItr->first);
+					log << getFName(FItr->first) << " " << FItr->second << "\n";
+				}
+			}
+			return false;
+		}
+	
+		bool fixParentChildTraces(CallGraph &CG) {
+
+			for (map<Function*, double>::iterator FItr = FuncToDynSizeMap.begin(); 
+				FItr != FuncToDynSizeMap.end(); FItr++) {
+				double size = FItr->second;
+				if (size  > MIN_TRACE_SIZE) {
+					FuncTraceList.push_back(FItr->first);
 				}
 			}
 			
@@ -270,15 +290,16 @@ namespace {
 			 * A modified version of the Dijkstra's algorithm to find path between two nodes
   			 * in a graph ( A -> B)
 			 */
-			for(list<Function*>::iterator A = funcTraceList.begin(); A != funcTraceList.end();
+			map<Function*, int> excludeMap;
+			for(list<Function*>::iterator A = FuncTraceList.begin(); A != FuncTraceList.end();
 				A++) {
-				for(list<Function*>::iterator B = funcTraceList.begin(); B != funcTraceList.end();
+				for(list<Function*>::iterator B = FuncTraceList.begin(); B != FuncTraceList.end();
 					B++) {
-	
-					log << "Checking path between " << getFName(*A) << " and " << getFName(*B) << "\n";	
+					
 					if (*A == *B) 
 						continue;
 	
+					bool pathFound = false;	
 					// Check if there is a path to B from A	
 					list<CallGraphNode* > dijQueue;
 					list<CallGraphNode* > seenNodes;
@@ -286,7 +307,7 @@ namespace {
 					// insert source node
 					dijQueue.push_back(CG[*A]);
 	
-					while(! dijQueue.empty()) {
+					while(!dijQueue.empty() && !pathFound) {
 						CallGraphNode* pathNode = dijQueue.front();
 						dijQueue.pop_front();
 				
@@ -299,8 +320,10 @@ namespace {
 
 								// logging
 								log << " There is a path from " <<  \
-									getFName(*A) << " " << getFName(*B) << "\n";
+									getFName(*A) << " to " << getFName(*B) << "\n";
 								
+								pathFound = true;
+								excludeMap.insert(make_pair(*A, 1));
 								// break out of while
 								break;
 							}
@@ -315,7 +338,7 @@ namespace {
 								continue;
 
 							dijQueue.push_back(pathChildNode);
-					
+							
 							// Maintain a list of seen nodes. Otherwise, dijkstra's would go into
 							// an infinite loop when there are cycles
 							seenNodes.push_back(pathChildNode);
@@ -323,9 +346,59 @@ namespace {
 					}	
 				}
 			}
+
+			for(list<Function*>::iterator fItr = FuncTraceList.begin(); fItr != FuncTraceList.end();
+				fItr++) {
+				if (excludeMap.find(*fItr) == excludeMap.end()) {
+					// traceFile << getFName(*fItr) << "\n";
+					continue;
+				}
+				fItr = FuncTraceList.erase(fItr);
+			}
 			return false;
 		}
 
+		string getBBName(BasicBlock* BB) {
+			return (BB != NULL  && BB->hasName())? BB->getName() : " ";	
+		}
+
+		bool printTracePCs() {
+			for(list<Function*>::iterator fItr = FuncTraceList.begin(); fItr != FuncTraceList.end();
+				fItr++) {
+
+				int headPC = 0 , tailPC = 0;
+	
+				pair<string, string> funcBB = make_pair(getFName(*fItr), "entry");
+				map<pair<string, string>, int>::iterator it = BBToAddrMap.find(funcBB);
+				if(it != BBToAddrMap.end()) {
+					headPC = it->second;
+				}
+			
+				UnifyFunctionExitNodes* UEN;
+				if((*fItr)->isDeclaration()) {
+					continue;
+				}
+					
+				BasicBlock* retBB;
+				UEN = &getAnalysis<UnifyFunctionExitNodes>(*(*fItr));
+				if(UEN != NULL && UEN->getReturnBlock() != NULL) {
+					retBB = UEN->getReturnBlock();
+					pair<string, string> funcBB = 
+						make_pair(getFName(*fItr), getBBName(retBB));
+					map<pair<string, string> , int>::iterator it = BBToAddrMap.find(funcBB);
+					if(it != BBToAddrMap.end()) {
+						tailPC = it->second;
+					}
+				}
+			
+				if (headPC != 0 && tailPC != 0) {
+					// traceFile << "H " << std::hex << headPC << " T " << tailPC << "\n";
+					traceFile << "H " << getFName(*fItr).c_str() << " entry T " << getFName(*fItr).c_str()
+						<< " " << getBBName(retBB).c_str() << "\n";
+				}
+			}
+			return false;
+		}
 
 		bool loadFuncCallIds() {
 			ifstream funcOrderFile;
@@ -394,7 +467,7 @@ namespace {
 		}
 
 		// This loads the number of instructions in a basic block	
-		bool loadBBSizes() {
+		bool loadSizesAndPCs() {
 			char bb_file_path[1024], bb_file_name[]="/bb_offset_out_x86_32.txt";
 			ifstream bb_file;
 
@@ -414,17 +487,16 @@ namespace {
 						stringstream linestream(line);
 						linestream>>curFunc>>curBB>>std::hex>>addr>>std::dec>>size;
 						BBToSizeMap.insert(make_pair(make_pair(curFunc, curBB),
-							size));	
+							size));
+						BBToAddrMap.insert(make_pair(make_pair(curFunc, curBB),
+							addr));
+							
 					}
 					bb_file.close();
 					return true;
 				}
 			}
 			return false;
-		}
-
-		string getBBName(BasicBlock* BB) {
-			return (BB->hasName())	? BB->getName() : "";
 		}
 
 		string getFName(Function* F) {
