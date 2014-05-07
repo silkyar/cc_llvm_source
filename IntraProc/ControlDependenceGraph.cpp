@@ -33,7 +33,24 @@
 using namespace llvm;
 using namespace std;
 
+
 namespace llvm {
+	std::map <BasicBlock*, int> BBOrderedMap;
+	std::map <int, ControlDependenceNode*> IDToEntryMap;
+
+	struct cmpBBByPostOrder {
+		bool operator() (BasicBlock* const a, BasicBlock* const b) const {
+			if ((BBOrderedMap.find(a) == BBOrderedMap.end())) {
+				errs() << "BB not in postorder map for comparison\n";
+				return 0;
+			} 
+			else if((BBOrderedMap.find(b) == BBOrderedMap.end()) ) {
+				errs() << "BB not in postorder map for comparison\n";
+				return 0;
+			}
+			return BBOrderedMap[a] < BBOrderedMap[b]; 
+		}
+	};
 
 	void ControlDependenceNode::addTrue(ControlDependenceNode *Child) {
 		TrueChildren.insert(Child);
@@ -351,7 +368,6 @@ namespace llvm {
 						C != CE; ++C) {
 					std::pair<ControlDependenceNode*, ControlDependenceNode*> edge = make_pair(cdn, *C);
 					if (backEdges.find(edge) != backEdges.end()) {
-						log << "Backedge " << getNodeName(cdn) <<  " " << *C << " " << getNodeName(*C) << "\n";
 						continue;
 					}
 					CDNQueue.push(*C);
@@ -371,34 +387,44 @@ namespace llvm {
 		BasicBlock* BB = node->getBlock();
 		return ControlDependenceGraphBase::getBBName(BB);
 	}
-
+	
 	void ControlDependenceGraphBase::printReachabilityMap(RMapTy descendantMap) {
 		ofstream log;
 		log.open("log.txt", ios::app);
 		RMapTy::iterator RItr;
 		for(RItr = descendantMap.begin(); RItr != descendantMap.end(); RItr++) {
-			log << getNodeName(RItr->first).c_str() << " " ;
+			log << "Entry " << getNodeName(RItr->first).c_str() << " : ";
 			for(std::set<ControlDependenceNode*>::iterator RSetItr = (RItr->second).begin();
 				RSetItr != (RItr->second).end(); RSetItr++) {
-				log << getNodeName(*RSetItr) << " " << " ";	
+				log << getNodeName(*RSetItr) << " ";	
 			}
 			log << endl;
 		}
 		log.close();
 	}
 
+	void ControlDependenceGraphBase::getBasicBlocksInOrder(Function *F) {
+		static int id = 0; 
+		ReversePostOrderTraversal<Function*> RPOT(F);
+		for(ReversePostOrderTraversal<Function*>::rpo_iterator RI = RPOT.begin();
+			RI != RPOT.end(); RI++) {
+			BasicBlock* BB = *RI; 
+			BBOrderedMap.insert(make_pair(BB, id++));
+		}
+	}
+	
 	void ControlDependenceGraphBase::SEMECreation(Function &F, SEMEMapTy* SEMEMap) {
 		NodeListTy nodeList = whatsgoingon(F);
 		RMapTy descendantMap, reachMap;
 		getReachableSet(F, nodeList, descendantMap, reachMap); 
-		printReachabilityMap(descendantMap);
+		//printReachabilityMap(descendantMap);
 		regionCreation(F, nodeList, descendantMap, reachMap, SEMEMap);
 	}
 
 	void ControlDependenceGraphBase::regionCreation(Function &F, NodeListTy nodeList, RMapTy descendantMap, RMapTy reachMap,
 		SEMEMapTy* SEMEMap) {
 		// reverse the nodeList (reverse breadth-wise topological order)
-		std::map<ControlDependenceNode*, std::set<ControlDependenceNode*> > funcSEMEMap;
+		std::map<int, std::set<ControlDependenceNode*> > funcSEMEMap;
 		nodeList.reverse();
 
 		for(NodeListTy::iterator NItr = nodeList.begin(); NItr != nodeList.end(); NItr++) {
@@ -424,19 +450,40 @@ namespace llvm {
 					ControlDependenceNode *src = *SItr;
 					if (descendantMap[c].find(src) == descendantMap[c].end()) {
 						// This is a multiple entry region. Skip this node
-						// errs() << "*******meme found " << getNodeName(c) << "\n";
 						meFound = true;
 						break;
 					}
 				}
 			}
-			
 			if (! meFound) {
-				funcSEMEMap.insert(make_pair(c, descendantMap[c]));
+				ControlDependenceNode* entry = getEntryBBToSEME(reachMap[c]);
+				IDToEntryMap.insert(make_pair(SEMEId, entry));
+				funcSEMEMap.insert(make_pair(SEMEId, reachMap[c]));
+				SEMEId++;
 			}
 		}
-
 		SEMEMap->insert(make_pair(&F, funcSEMEMap));
+	}
+
+	void ControlDependenceGraphs::printSEMEs(SEMEMapTy SEMEMap) {
+		ofstream log;
+		log.open("log.txt", ios::app);
+
+		for(SEMEMapTy::iterator FItr = SEMEMap.begin(); FItr != SEMEMap.end();
+			FItr++) {
+			log << "Function " << ControlDependenceGraphBase::getFName(FItr->first) << endl;
+			for(std::map<int, std::set<ControlDependenceNode*> >::iterator SItr =
+				(FItr->second).begin(); SItr != (FItr->second).end(); SItr++) {
+				//log << "Entry " << ControlDependenceGraphBase::getNodeName(SItr->first) << endl;
+				for(std::set<ControlDependenceNode*> ::iterator nodeItr = (SItr->second).begin();
+					nodeItr != (SItr->second).end(); nodeItr++) {
+					log << ControlDependenceGraphBase::getNodeName(*nodeItr) << " ";
+				}
+				log << endl;
+			}
+			log << endl;
+		}
+		log.close();
 	}
 
 	bool ControlDependenceGraphs::runPassOnSCC(CallGraphSCC& SCC) {
@@ -447,16 +494,6 @@ namespace llvm {
 				/* Compute size of this function */
 				errs() << " Working on function " << ControlDependenceGraphBase::getFName(F) << "\n";
 				computeSizes(F);
- 
-				for(Function::iterator FItr = F->begin(); FItr != F->end(); FItr++) {   
-					BasicBlock* BB = &(*FItr);
-					for(BasicBlock::iterator BBItr = BB->begin(); BBItr != BB->end(); BBItr++) {
-						Instruction* I = &(*BBItr);
-						if (I && isa<CallInst>(I)) {
-							// Add the callee's semes to this function
-						}
-					}
-				}
 			}								
 		}
 		return false;	
@@ -484,10 +521,31 @@ namespace llvm {
 		fin.close();
 	}
 
-	void ControlDependenceGraphs::computeSizes(Function *F) {
-		// Look at the all the semes of this function and compute
-		// their sizes
+	ControlDependenceNode* ControlDependenceGraphBase::getEntryBBToSEME(std:set<ControlDependenceNode *> reachSet) {
 		
+	/*	
+		// Return the entry node if is a basic block
+		if (! entryNode->isRegion()) {
+			return entryNode;
+		}
+		
+		// Keep going left in the Control Dependence Graph till we hit a basic block
+		ControlDependenceNode *currNode = entryNode;
+		while(currNode->isRegion()) {
+			ControlDependenceNode::edge_iterator C = currNode->begin();
+			if (C != currNode->end()) {
+				currNode = *C;
+			} else {
+				errs() << " No entryBBToSEME found ";
+				return NULL;	
+			}	
+		}
+		return currNode;*/
+	}
+
+	// Look at the all the semes of this function and compute
+	// their sizes
+	void ControlDependenceGraphs::computeSizes(Function *F) {
 		SEMEMapTy::iterator SEMEMapItr;
 		SEMEMapItr = SEMEMap.find(F);
 		
@@ -495,36 +553,47 @@ namespace llvm {
 			errs() << "computeSizes : Function not found in the SEMEMap\n";
 			return;
 		}
-		BasicBlock* entry = &(F->getEntryBlock());
-		double entryExecCount = PI->getExecutionCount(entry);	
 
-		std::map<ControlDependenceNode*, std::set<ControlDependenceNode*> > funcSEMEMap = SEMEMapItr->second;
+		std::map<int, std::set<ControlDependenceNode*> > 
+			funcSEMEMap = SEMEMapItr->second;
 
-		for(std::map<ControlDependenceNode*, std::set<ControlDependenceNode*> >::iterator funcSEMEMapItr =
-			funcSEMEMap.begin(); funcSEMEMapItr != funcSEMEMap.end(); funcSEMEMapItr++) {
+		// Compute the size of each SEME
+		for(std::map<int, std::set<ControlDependenceNode*> >::iterator 
+			funcSEMEMapItr = funcSEMEMap.begin(); funcSEMEMapItr != funcSEMEMap.end(); 
+			funcSEMEMapItr++) {
+			
 			double semeSize = 0;
-
-			ControlDependenceNode *entryRegion = funcSEMEMapItr->first;
 			bool existsTraceRegion = false;
-			for(std::set<ControlDependenceNode* >::iterator node = funcSEMEMapItr->second.begin(); 
-				node != funcSEMEMapItr->second.end() && !existsTraceRegion ; node++) {
+			ControlDependenceNode *entryNode ;
+			//TODO = funcSEMEMapItr->first;
+
+
+			// Iterate through all the nodes in the SEME
+			for(std::set<ControlDependenceNode* >::iterator node = 
+				funcSEMEMapItr->second.begin(); node != funcSEMEMapItr->second.end() 
+				&& !existsTraceRegion ; node++) {
+
 				if ((*node)->isRegion()) {
 					continue;
 				}
+
+				// Get the size of the basic block node
 				double bbSize = getBBSize(F, (*node)->getBlock(), existsTraceRegion);
+			
+				setBBSize((*node)->getBlock(), bbSize);
+
+				// There exists a large enough region in the callee SEMEs
+				// Any SEME with this BB will not be considered
 				if (existsTraceRegion) {
-					// There exists a large enough region in the callee SEMEs
-					// Any SEME with this BB will not be considered
 					continue;
 				}
-				semeSize += bbSize;
-				errs() << semeSize << "\n";
+
 			}
 
 			if (semeSize >= REGION_THRES) {
 				errs() << " region found \n";
 			}
-			SEMESizeMap.insert(make_pair(entryRegion, semeSize));
+			SEMESizeMap.insert(make_pair(entryNode, semeSize));
 		}
 	}
 
@@ -549,8 +618,7 @@ namespace llvm {
 		std::map<std::pair<std::string, std::string>, std::pair<int, int> >::iterator bbOffSizeMapItr;
 		bbOffSizeMapItr = bbOffsetSizeMap.find(funcBBName);
 		if(bbOffSizeMapItr != bbOffsetSizeMap.end()) {
-			total_size = (double)(bbOffSizeMapItr->second).second;
-			errs() << "TOTOL " << total_size << "\n";
+			total_size = (double)(bbOffSizeMapItr->second).first;
 		}
 
 		for(BasicBlock::iterator BBItr = BB->begin(); BBItr != BB->end(); BBItr++) {
@@ -572,10 +640,11 @@ namespace llvm {
 				continue;
 			}
 
-			for(std::map<ControlDependenceNode*, std::set<ControlDependenceNode*> >::iterator itr = 
+			for(std::map<int, std::set<ControlDependenceNode*> >::iterator itr = 
 				calleeSEMEs->second.begin(); itr !=  calleeSEMEs->second.end();
 				itr++) {
-				ControlDependenceNode *entryCDN = itr->first;
+				ControlDependenceNode *entryCDN;
+				//TODO = itr->first;
 				SEMESizeTy::iterator SItr = SEMESizeMap.find(entryCDN);
 
 				if (SItr == SEMESizeMap.end()) {
@@ -589,16 +658,14 @@ namespace llvm {
 					
 					// save for next time
 					setBBSize(BB, BIG_REGION);
-
 					existsTraceRegion = true;
 					return total_size;
 				}
-
 				total_size += size;
 			}
 		}
 
-		setBBSize(BB, total_size);
+		setBBSize(BB, BIG_REGION);
 		return total_size;
 	}
 
@@ -646,7 +713,6 @@ namespace llvm {
 			return NULL;
 		}
 	}
-
 	
 } // namespace llvm
 
