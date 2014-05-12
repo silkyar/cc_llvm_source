@@ -23,6 +23,7 @@
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Support/CFG.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #include <iostream>
 #include <fstream>
@@ -35,8 +36,12 @@ using namespace std;
 
 
 namespace llvm {
+
+	// SEMEId to entry basic block map
+	std::map <int, BasicBlock*> IDToEntryMap;
+
+	// Ordering basic blocks to find the right entry to any SEME
 	std::map <BasicBlock*, int> BBOrderedMap;
-	std::map <int, ControlDependenceNode*> IDToEntryMap;
 
 	struct cmpBBByPostOrder {
 		bool operator() (BasicBlock* const a, BasicBlock* const b) const {
@@ -293,20 +298,23 @@ namespace llvm {
 		}
 	}
 
+	// Get name of a basic block
 	std::string ControlDependenceGraphBase::getBBName(BasicBlock* BB) {
-		return (BB != NULL && BB->hasName()) ? BB->getName() : "";
+		return (BB != NULL && BB->hasName()) ? BB->getName() : " ";
 	}
 
+	// Get name of a function
 	std::string ControlDependenceGraphBase::getFName(Function* F) {
-		return (F!= NULL && F->hasName()) ? F->getName() : "";
+		return (F!= NULL && F->hasName()) ? F->getName() : " ";
 	}
 
-	ControlDependenceGraphBase::NodeListTy ControlDependenceGraphBase::whatsgoingon(Function &F) {
+	// Returns the node list for every function and updates the edges list
+	ControlDependenceGraphBase::NodeListTy ControlDependenceGraphBase::getNodeList(
+		Function &F) {
 	
 		ofstream log;
 		log.open("log.txt", ios::app);
 			
-		static unsigned edge_id = 0;
 		std::set<ControlDependenceNode*> visitedBBs;
 		
 		std::list<ControlDependenceNode*> nodeList;
@@ -316,25 +324,70 @@ namespace llvm {
 		preservedNodeList.push_back(root);
 
 		while(nodeList.size() != 0) {
+			
 			ControlDependenceNode* node = nodeList.front();
 			nodeList.pop_front();
 			visitedBBs.insert(node);
+
 			for (ControlDependenceNode::edge_iterator C = node->begin(), CE = node->end();
 				C != CE; ++C) {
 				if (visitedBBs.find(*C) != visitedBBs.end()) {
-					backEdges.insert(std::make_pair(make_pair(node, *C), edge_id++));
 					continue;
 				}
 				else {
-					// edges <dest, list of <src> >
 					edges[*C].push_back(node);
 					nodeList.push_back(*C);
 					preservedNodeList.push_back(*C);
 				}
 			}
 		}
+
 		log.close();
 		return preservedNodeList;
+	}
+
+	// Find the backedges in the directed control dependence graph
+	bool ControlDependenceGraphBase::findBackEdges(Function &F, std::list<ControlDependenceNode*> nodeList) {
+		std::map<ControlDependenceNode*, bool> visited;
+		std::map<ControlDependenceNode*, bool> recurStack;
+
+		for(std::list<ControlDependenceNode*>::iterator NItr = nodeList.begin(); 
+			NItr != nodeList.end(); NItr++) {
+			visited[*NItr] = false;
+			recurStack[*NItr] = false;
+		}
+
+		// detect cycles 
+		for(std::list<ControlDependenceNode*>::iterator NItr = nodeList.begin();
+			NItr != nodeList.end(); NItr++) {
+			if (visited[*NItr] == false) {
+				findBEs(*NItr, visited, recurStack);
+			}
+		}
+		return true;
+	}
+
+	bool ControlDependenceGraphBase::findBEs(ControlDependenceNode* node, 
+		std::map<ControlDependenceNode*, bool> &visited, 
+		std::map<ControlDependenceNode*, bool> &recurStack) {
+		static int edgeId = 0;
+		
+		//if(visited[node] == false) {
+			visited[node] = true;
+			recurStack[node] = true;
+		
+			for (ControlDependenceNode::edge_iterator EItr = node->begin(); EItr != node->end();
+				EItr++) {
+				if (visited[*EItr] == false) {
+					findBEs(*EItr, visited, recurStack); 
+				} 
+				else if (recurStack[*EItr]) {
+					backEdges.insert(make_pair(make_pair(node, *EItr), edgeId++));
+				}
+			}
+		//}
+		recurStack[node] = false;
+		return false;
 	}
 
 	/*
@@ -342,24 +395,25 @@ namespace llvm {
 	 */
 	void ControlDependenceGraphBase::getReachableSet(Function &F, NodeListTy nodeList, 
 		RMapTy &descendantMap, RMapTy &reachMap) {
-		
+	
 		ofstream log;
 		log.open("log.txt", ios::app);
-			
+		errs() << "In function " << getFName(&F) << "\n";	
+	
 		for(NodeListTy::iterator NItr = nodeList.begin(); NItr != nodeList.end(); NItr ++) {
 			ControlDependenceNode* root = *NItr;
 			std::queue<ControlDependenceNode*> CDNQueue;
 			CDNQueue.push(root);
-
+		
 			std::set<ControlDependenceNode*> decSet;
 			std::set<ControlDependenceNode*> reachSet;
+		
 			while(CDNQueue.size() != 0) {
 				ControlDependenceNode* cdn = CDNQueue.front();
 				CDNQueue.pop();
 				
 				// Add the popped out node to set and add its children to the queue
 				decSet.insert(cdn);
-
 				if (!cdn->isRegion()) {
 					reachSet.insert(cdn);
 				}
@@ -367,15 +421,22 @@ namespace llvm {
 				for (ControlDependenceNode::edge_iterator C = cdn->begin(), CE = cdn->end();
 						C != CE; ++C) {
 					std::pair<ControlDependenceNode*, ControlDependenceNode*> edge = make_pair(cdn, *C);
+						
 					if (backEdges.find(edge) != backEdges.end()) {
 						continue;
 					}
-					CDNQueue.push(*C);
+					if(decSet.find(*C) == decSet.end()) { 
+						CDNQueue.push(*C);
+					}
 				}
 			}
 			// Add the descendant set to the map
 			descendantMap.insert(make_pair(root, decSet));
 			reachMap.insert(make_pair(root, reachSet));
+
+			if (reachSet.size() == 0) {
+				errs() << "Reach set size is 0 \n";
+			}
 		}
 		log.close();
 	}
@@ -386,21 +447,6 @@ namespace llvm {
 		}
 		BasicBlock* BB = node->getBlock();
 		return ControlDependenceGraphBase::getBBName(BB);
-	}
-	
-	void ControlDependenceGraphBase::printReachabilityMap(RMapTy descendantMap) {
-		ofstream log;
-		log.open("log.txt", ios::app);
-		RMapTy::iterator RItr;
-		for(RItr = descendantMap.begin(); RItr != descendantMap.end(); RItr++) {
-			log << "Entry " << getNodeName(RItr->first).c_str() << " : ";
-			for(std::set<ControlDependenceNode*>::iterator RSetItr = (RItr->second).begin();
-				RSetItr != (RItr->second).end(); RSetItr++) {
-				log << getNodeName(*RSetItr) << " ";	
-			}
-			log << endl;
-		}
-		log.close();
 	}
 
 	void ControlDependenceGraphBase::getBasicBlocksInOrder(Function *F) {
@@ -414,10 +460,11 @@ namespace llvm {
 	}
 	
 	void ControlDependenceGraphBase::SEMECreation(Function &F, SEMEMapTy* SEMEMap) {
-		NodeListTy nodeList = whatsgoingon(F);
+
+		NodeListTy nodeList = getNodeList(F);
+		findBackEdges(F, nodeList);	
 		RMapTy descendantMap, reachMap;
 		getReachableSet(F, nodeList, descendantMap, reachMap); 
-		//printReachabilityMap(descendantMap);
 		regionCreation(F, nodeList, descendantMap, reachMap, SEMEMap);
 	}
 
@@ -426,7 +473,6 @@ namespace llvm {
 		// reverse the nodeList (reverse breadth-wise topological order)
 		std::map<int, std::set<ControlDependenceNode*> > funcSEMEMap;
 		nodeList.reverse();
-
 		for(NodeListTy::iterator NItr = nodeList.begin(); NItr != nodeList.end(); NItr++) {
 			
 			ControlDependenceNode* c = *NItr;
@@ -456,7 +502,7 @@ namespace llvm {
 				}
 			}
 			if (! meFound) {
-				ControlDependenceNode* entry = getEntryBBToSEME(reachMap[c]);
+				BasicBlock* entry = getEntryBBToSEME(reachMap[c]);
 				IDToEntryMap.insert(make_pair(SEMEId, entry));
 				funcSEMEMap.insert(make_pair(SEMEId, reachMap[c]));
 				SEMEId++;
@@ -465,40 +511,55 @@ namespace llvm {
 		SEMEMap->insert(make_pair(&F, funcSEMEMap));
 	}
 
+
+	/*
+ 	 * Print the SEMEs
+ 	 */
+	
 	void ControlDependenceGraphs::printSEMEs(SEMEMapTy SEMEMap) {
-		ofstream log;
-		log.open("log.txt", ios::app);
+		openLogFiles();
 
 		for(SEMEMapTy::iterator FItr = SEMEMap.begin(); FItr != SEMEMap.end();
 			FItr++) {
-			log << "Function " << ControlDependenceGraphBase::getFName(FItr->first) << endl;
 			for(std::map<int, std::set<ControlDependenceNode*> >::iterator SItr =
 				(FItr->second).begin(); SItr != (FItr->second).end(); SItr++) {
-				//log << "Entry " << ControlDependenceGraphBase::getNodeName(SItr->first) << endl;
+
+				int semeId = SItr->first;
+				BasicBlock* entryBB = IDToEntryMap[semeId];
+
+				if (entryBB != NULL)  {
+					log << "Entry to SEME " << 
+						ControlDependenceGraphBase::getBBName(entryBB).c_str() << "\n";
+				}
+				
 				for(std::set<ControlDependenceNode*> ::iterator nodeItr = (SItr->second).begin();
 					nodeItr != (SItr->second).end(); nodeItr++) {
 					log << ControlDependenceGraphBase::getNodeName(*nodeItr) << " ";
 				}
+
 				log << endl;
 			}
 			log << endl;
 		}
-		log.close();
+		closeLogFiles();
 	}
 
+	/*
+ 	 * Compute function sizes
+ 	 */ 	
 	bool ControlDependenceGraphs::runPassOnSCC(CallGraphSCC& SCC) {
 		for(CallGraphSCC::iterator I = SCC.begin(), E = SCC.end(); I != E; ++I) {
 			Function *F = (*I)->getFunction();
 			if (F && !F->isDeclaration()) {
-				
-				/* Compute size of this function */
-				errs() << " Working on function " << ControlDependenceGraphBase::getFName(F) << "\n";
 				computeSizes(F);
 			}								
 		}
 		return false;	
 	}
 
+	/* 
+ 	 * Load the sizes of all the basic blocks from objdump
+ 	 */ 	
 	void ControlDependenceGraphs::loadBBSizes() {
 		ifstream fin;
 		fin.open("bb_offset_out_x86_32.txt", ios::in);
@@ -521,30 +582,32 @@ namespace llvm {
 		fin.close();
 	}
 
-	ControlDependenceNode* ControlDependenceGraphBase::getEntryBBToSEME(std:set<ControlDependenceNode *> reachSet) {
-		
-	/*	
-		// Return the entry node if is a basic block
-		if (! entryNode->isRegion()) {
-			return entryNode;
+	/*
+ 	 * Get the entry block to a SEME.
+ 	 * Sorts the basic blocks as per the objdump order
+ 	 * and returns the first BB
+ 	 */ 
+	BasicBlock* ControlDependenceGraphBase::getEntryBBToSEME(
+		std::set<ControlDependenceNode *> reachSet) {
+	
+		std::list<BasicBlock* > nLst;
+		for(std::set<ControlDependenceNode*>::iterator it = reachSet.begin(); 
+			it != reachSet.end(); it++) {
+			BasicBlock* bb = (*it)->getBlock();
+			nLst.push_back(bb);	
 		}
-		
-		// Keep going left in the Control Dependence Graph till we hit a basic block
-		ControlDependenceNode *currNode = entryNode;
-		while(currNode->isRegion()) {
-			ControlDependenceNode::edge_iterator C = currNode->begin();
-			if (C != currNode->end()) {
-				currNode = *C;
-			} else {
-				errs() << " No entryBBToSEME found ";
-				return NULL;	
-			}	
+		nLst.sort(cmpBBByPostOrder());
+		if (nLst.size() == 0) {
+			errs() << "No entry found " << "\n";
 		}
-		return currNode;*/
+		return nLst.front();
 	}
-
-	// Look at the all the semes of this function and compute
-	// their sizes
+	
+	
+	/*
+ 	 * Look at the the semes of this function and compute
+ 	 * their sizes
+ 	 */
 	void ControlDependenceGraphs::computeSizes(Function *F) {
 		SEMEMapTy::iterator SEMEMapItr;
 		SEMEMapItr = SEMEMap.find(F);
@@ -564,9 +627,10 @@ namespace llvm {
 			
 			double semeSize = 0;
 			bool existsTraceRegion = false;
-			ControlDependenceNode *entryNode ;
-			//TODO = funcSEMEMapItr->first;
+			int semeId = funcSEMEMapItr->first;
 
+			BasicBlock* entry = IDToEntryMap[semeId];
+			double entryExecCount = getEntryExecCount(entry);
 
 			// Iterate through all the nodes in the SEME
 			for(std::set<ControlDependenceNode* >::iterator node = 
@@ -579,24 +643,89 @@ namespace llvm {
 
 				// Get the size of the basic block node
 				double bbSize = getBBSize(F, (*node)->getBlock(), existsTraceRegion);
-			
+				double bbExecCount = getBBExecCount((*node)->getBlock(), funcSEMEMapItr->second);	
+				
+				bbSize = (bbSize * bbExecCount)/entryExecCount;
 				setBBSize((*node)->getBlock(), bbSize);
 
+				semeSize += bbSize;
+				errs() << semeSize << " " << entryExecCount << " " << bbSize << " " << bbExecCount << "\n";
 				// There exists a large enough region in the callee SEMEs
 				// Any SEME with this BB will not be considered
 				if (existsTraceRegion) {
 					continue;
 				}
-
 			}
 
 			if (semeSize >= REGION_THRES) {
 				errs() << " region found \n";
 			}
-			SEMESizeMap.insert(make_pair(entryNode, semeSize));
+			
+			SEMESizeMap.insert(make_pair(semeId, semeSize));
 		}
 	}
+	
+	/* 
+ 	 * Get the execution count of the entry basic block of the SEME 
+ 	 */ 
+	double ControlDependenceGraphs::getEntryExecCount(BasicBlock* BB) {
+		double totalEdgeWeight = 0;
 
+		bool foundEdge = false;
+		for(pred_iterator PItr = pred_begin(BB); PItr != pred_end(BB); PItr++) {
+			std::pair<const BasicBlock*, const BasicBlock*> tmpBackEdgeCheck(*PItr, BB);
+			if (CFGBackEdges.find(tmpBackEdgeCheck) == CFGBackEdges.end()) {
+				foundEdge = true;
+				totalEdgeWeight += PI->getEdgeWeight(PI->getEdge(*PItr, BB));
+			} else {
+				errs() << "Backedge between " << ControlDependenceGraphBase::getBBName(*PItr) 
+					<< " " << ControlDependenceGraphBase::getBBName(BB);
+			}
+		} 
+
+		// returning 1 if the BB has no pred
+		// TODO: CHECK
+		return (foundEdge) ? totalEdgeWeight : 1;
+	}
+
+	/*
+	 * Get the execution count of the BB
+	 */
+	double ControlDependenceGraphs::getBBExecCount(BasicBlock* BB, 
+		std::set<ControlDependenceNode*> semeSet) {
+		double totalEdgeWeight = 0;
+
+		
+		for(pred_iterator PItr = pred_begin(BB); PItr != pred_end(BB); PItr++) {
+			
+			for(std::set<ControlDependenceNode*>::iterator SItr = semeSet.begin();
+				SItr != semeSet.end(); SItr++ ) {
+				if( (*SItr)->isRegion()) {
+					continue;
+				}
+				BasicBlock* node = (*SItr)->getBlock();
+				if (node == *PItr) {
+					totalEdgeWeight += PI->getEdgeWeight(PI->getEdge(*PItr, BB));
+				}
+			}
+		}
+		return totalEdgeWeight;
+	}
+
+	/*
+ 	 * Get the backedges in the control flow graph 
+ 	 */
+	void ControlDependenceGraphs::getCFGBackEdges(Function *F) {
+		SmallVector<pair<const BasicBlock*, const BasicBlock*> , 64> backEdgesVector;
+		FindFunctionBackedges(*F, backEdgesVector);
+		CFGBackEdges.insert(backEdgesVector.begin(), backEdgesVector.end());	
+	}
+
+
+	/*
+     * Compute the size of the basic block based on its size and the size of 
+     * any callee function
+     */ 
 	double ControlDependenceGraphs::getBBSize(Function *F, BasicBlock *BB, bool &existsTraceRegion ) {
 	
 		double total_size = 0;
@@ -643,9 +772,7 @@ namespace llvm {
 			for(std::map<int, std::set<ControlDependenceNode*> >::iterator itr = 
 				calleeSEMEs->second.begin(); itr !=  calleeSEMEs->second.end();
 				itr++) {
-				ControlDependenceNode *entryCDN;
-				//TODO = itr->first;
-				SEMESizeTy::iterator SItr = SEMESizeMap.find(entryCDN);
+				SEMESizeTy::iterator SItr = SEMESizeMap.find(itr->first);
 
 				if (SItr == SEMESizeMap.end()) {
 					errs() << "Size of the SEME not found \n";
@@ -669,6 +796,9 @@ namespace llvm {
 		return total_size;
 	}
 
+	/* 
+ 	 * Store the size of the basic block to avoid recomputation
+ 	 */ 
 	void ControlDependenceGraphs::setBBSize(BasicBlock* BB, double size) {
 		BBSizeMap.insert(make_pair(BB, size));	
 	}
