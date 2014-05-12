@@ -521,12 +521,13 @@ namespace llvm {
 
 		for(SEMEMapTy::iterator FItr = SEMEMap.begin(); FItr != SEMEMap.end();
 			FItr++) {
+			log << "In function " << ControlDependenceGraphBase::getFName(FItr->first).c_str() << "\n";
 			for(std::map<int, std::set<ControlDependenceNode*> >::iterator SItr =
 				(FItr->second).begin(); SItr != (FItr->second).end(); SItr++) {
 
 				int semeId = SItr->first;
 				BasicBlock* entryBB = IDToEntryMap[semeId];
-
+				log << "SEMEId " << semeId << "\n";
 				if (entryBB != NULL)  {
 					log << "Entry to SEME " << 
 						ControlDependenceGraphBase::getBBName(entryBB).c_str() << "\n";
@@ -551,6 +552,7 @@ namespace llvm {
 		for(CallGraphSCC::iterator I = SCC.begin(), E = SCC.end(); I != E; ++I) {
 			Function *F = (*I)->getFunction();
 			if (F && !F->isDeclaration()) {
+				errs() << "In function " << ControlDependenceGraphBase::getFName(F).c_str() << "\n";
 				computeSizes(F);
 			}								
 		}
@@ -578,6 +580,7 @@ namespace llvm {
 			std::pair<int, int> add = make_pair(size, addr);
 
 			bbOffsetSizeMap.insert(std::make_pair(bblk, add));
+			errs() << size << "\n";
 		}
 		fin.close();
 	}
@@ -630,6 +633,7 @@ namespace llvm {
 			int semeId = funcSEMEMapItr->first;
 
 			BasicBlock* entry = IDToEntryMap[semeId];
+			errs() << "SEMEId" << semeId << "\n";
 			double entryExecCount = getEntryExecCount(entry);
 
 			// Iterate through all the nodes in the SEME
@@ -643,13 +647,16 @@ namespace llvm {
 
 				// Get the size of the basic block node
 				double bbSize = getBBSize(F, (*node)->getBlock(), existsTraceRegion);
-				double bbExecCount = getBBExecCount((*node)->getBlock(), funcSEMEMapItr->second);	
+				double bbExecCount = getBBExecCount((*node)->getBlock(), funcSEMEMapItr->second, entry);	
 				
-				bbSize = (bbSize * bbExecCount)/entryExecCount;
+				double dynBBSize = 0;
+				if (entryExecCount != 0) {
+					dynBBSize =	(bbSize * bbExecCount)/entryExecCount;
+				}
 				setBBSize((*node)->getBlock(), bbSize);
 
-				semeSize += bbSize;
-				errs() << semeSize << " " << entryExecCount << " " << bbSize << " " << bbExecCount << "\n";
+				semeSize += dynBBSize;
+				errs() << semeSize << " " << entryExecCount << " " << bbSize << " " << bbExecCount << " " << dynBBSize << "\n";
 				// There exists a large enough region in the callee SEMEs
 				// Any SEME with this BB will not be considered
 				if (existsTraceRegion) {
@@ -692,20 +699,36 @@ namespace llvm {
 	 * Get the execution count of the BB
 	 */
 	double ControlDependenceGraphs::getBBExecCount(BasicBlock* BB, 
-		std::set<ControlDependenceNode*> semeSet) {
+		std::set<ControlDependenceNode*> semeSet, BasicBlock* entryBB) {
 		double totalEdgeWeight = 0;
 
-		
+		errs() << "BB exec count for " << 	
+						ControlDependenceGraphBase::getBBName(BB) << "\n";
 		for(pred_iterator PItr = pred_begin(BB); PItr != pred_end(BB); PItr++) {
-			
+		
+			if (entryBB == BB) {
+				totalEdgeWeight += PI->getEdgeWeight(PI->getEdge(*PItr, BB));
+				errs() << ControlDependenceGraphBase::getBBName(*PItr) << " " <<
+						ControlDependenceGraphBase::getBBName(BB) << "\n";
+				errs() << totalEdgeWeight << "\n";
+				continue;
+			}
+
 			for(std::set<ControlDependenceNode*>::iterator SItr = semeSet.begin();
 				SItr != semeSet.end(); SItr++ ) {
 				if( (*SItr)->isRegion()) {
 					continue;
 				}
 				BasicBlock* node = (*SItr)->getBlock();
+				
+				// If the BB is the entryBB of the seme, then all the pred edges are
+				// taken into account. Otherwise, only the edges with predecessors
+				// that are part of the seme are taken into consideration
 				if (node == *PItr) {
 					totalEdgeWeight += PI->getEdgeWeight(PI->getEdge(*PItr, BB));
+					errs() << ControlDependenceGraphBase::getBBName(*PItr) << " " <<
+						ControlDependenceGraphBase::getBBName(BB) << "\n";
+					errs() << totalEdgeWeight << "\n";
 				}
 			}
 		}
@@ -746,10 +769,14 @@ namespace llvm {
 
 		std::map<std::pair<std::string, std::string>, std::pair<int, int> >::iterator bbOffSizeMapItr;
 		bbOffSizeMapItr = bbOffsetSizeMap.find(funcBBName);
+	
 		if(bbOffSizeMapItr != bbOffsetSizeMap.end()) {
 			total_size = (double)(bbOffSizeMapItr->second).first;
+		} else {
+			errs() << "BB size not found from dump \n";
 		}
 
+		errs() << "SIZE from dump " << total_size << "\n";
 		for(BasicBlock::iterator BBItr = BB->begin(); BBItr != BB->end(); BBItr++) {
 			Instruction *I = &(*BBItr);
 			if(!isa<CallInst>(I)) {
@@ -765,13 +792,17 @@ namespace llvm {
 	
 			SEMEMapTy::iterator calleeSEMEs = SEMEMap.find(CF);
 			if (calleeSEMEs == SEMEMap.end()) {
-				errs () << "Callee function " << ControlDependenceGraphBase::getFName(CF).c_str() << " has no SEMEs \n";
+				errs () << "Callee function " << 
+					ControlDependenceGraphBase::getFName(CF).c_str() << " has no SEMEs \n";
 				continue;
 			}
 
+			
 			for(std::map<int, std::set<ControlDependenceNode*> >::iterator itr = 
 				calleeSEMEs->second.begin(); itr !=  calleeSEMEs->second.end();
 				itr++) {
+				
+				errs () << "callee SEMEId " << itr->first << "\n";
 				SEMESizeTy::iterator SItr = SEMESizeMap.find(itr->first);
 
 				if (SItr == SEMESizeMap.end()) {
@@ -780,6 +811,7 @@ namespace llvm {
 				}
 
 				double size = SItr->second;
+				errs() << " Size to be added " << size << "\n";
 				if (size >= REGION_THRES) {
 					outs() << " Large callee SEME found \n";
 					
@@ -792,7 +824,8 @@ namespace llvm {
 			}
 		}
 
-		setBBSize(BB, BIG_REGION);
+		setBBSize(BB, total_size);
+		errs() << "Returning " << total_size << "\n";
 		return total_size;
 	}
 
