@@ -372,20 +372,18 @@ namespace llvm {
 		std::map<ControlDependenceNode*, bool> &recurStack) {
 		static int edgeId = 0;
 		
-		//if(visited[node] == false) {
-			visited[node] = true;
-			recurStack[node] = true;
-		
-			for (ControlDependenceNode::edge_iterator EItr = node->begin(); EItr != node->end();
-				EItr++) {
-				if (visited[*EItr] == false) {
-					findBEs(*EItr, visited, recurStack); 
+		visited[node] = true;
+		recurStack[node] = true;
+	
+		for (ControlDependenceNode::edge_iterator EItr = node->begin(); EItr != node->end();
+			EItr++) {
+			if (visited[*EItr] == false) {
+			findBEs(*EItr, visited, recurStack); 
 				} 
-				else if (recurStack[*EItr]) {
-					backEdges.insert(make_pair(make_pair(node, *EItr), edgeId++));
-				}
+			else if (recurStack[*EItr]) {
+			backEdges.insert(make_pair(make_pair(node, *EItr), edgeId++));
 			}
-		//}
+		}
 		recurStack[node] = false;
 		return false;
 	}
@@ -441,6 +439,9 @@ namespace llvm {
 		log.close();
 	}
 
+	/*
+	 * Returns the name of the node, 'Region' if the node is a region node
+	 */
 	std::string ControlDependenceGraphBase::getNodeName(ControlDependenceNode* node) {
 		if (node->isRegion()) {
 			return "Region";
@@ -449,6 +450,9 @@ namespace llvm {
 		return ControlDependenceGraphBase::getBBName(BB);
 	}
 
+	/*
+	 * Gives a ID to all BBs in a function in reverse post order
+     */
 	void ControlDependenceGraphBase::getBasicBlocksInOrder(Function *F) {
 		static int id = 0; 
 		ReversePostOrderTraversal<Function*> RPOT(F);
@@ -511,7 +515,6 @@ namespace llvm {
 		SEMEMap->insert(make_pair(&F, funcSEMEMap));
 	}
 
-
 	/*
  	 * Print the SEMEs
  	 */
@@ -527,7 +530,7 @@ namespace llvm {
 
 				int semeId = SItr->first;
 				BasicBlock* entryBB = IDToEntryMap[semeId];
-				log << "SEMEId " << semeId << "\n";
+				log << "SEME Id: " << semeId << "\n";
 				if (entryBB != NULL)  {
 					log << "Entry to SEME " << 
 						ControlDependenceGraphBase::getBBName(entryBB).c_str() << "\n";
@@ -636,14 +639,16 @@ namespace llvm {
 			bool existsTraceRegion = false;
 			int semeId = funcSEMEMapItr->first;
 
+			// logging
+			errs() << "\n SEME Id " << semeId << "\n";
+
 			BasicBlock* entry = IDToEntryMap[semeId];
-			errs() << "\nSEMEId " << semeId << "\n";
-			double entryExecCount = getEntryExecCount(F, entry);
+			double entryExecCount = getEntryExecCount(F, entry, funcSEMEMapItr->second);
 
 			// Iterate through all the nodes in the SEME
 			for(std::set<ControlDependenceNode* >::iterator node = 
 				funcSEMEMapItr->second.begin(); node != funcSEMEMapItr->second.end() 
-				&& !existsTraceRegion ; node++) {
+				; node++) {
 
 				if ((*node)->isRegion()) {
 					continue;
@@ -651,37 +656,31 @@ namespace llvm {
 
 				// Get the size of the basic block node
 				double bbSize = getBBSize(F, (*node)->getBlock(), existsTraceRegion);
-				double bbExecCount = getBBExecCount(F, (*node)->getBlock(), funcSEMEMapItr->second, entry);	
+				double bbExecCount = getBBExecCount(F, (*node)->getBlock(), 
+					funcSEMEMapItr->second, entry);	
 				double dynBBSize = 0;
 				
 				if (entryExecCount != 0) {
 					dynBBSize =	(bbSize * bbExecCount)/entryExecCount;
 				}
-				semeSize += dynBBSize;
 				
-
+				semeSize += dynBBSize;
 				errs() << semeSize << " " << entryExecCount << " " << bbSize << " " << 
 					bbExecCount << " " << dynBBSize << "\n";
-				
-				// There exists a large enough region in the callee SEMEs
-				// Any SEME with this BB will not be considered
-				if (existsTraceRegion) {
-					continue;
-				}
 			}
 
 			if (semeSize >= REGION_THRES) {
-				errs() << " region found \n";
-				storeRegion(F, semeId, regionMap);
-			}
-			
+				if (!existsTraceRegion) {
+					storeRegion(F, semeId, regionMap);
+				}
+			}	
 			SEMESizeMap.insert(make_pair(semeId, semeSize));
 		}
+
 		// Function size is the size of the last (complete function) seme
 		FuncSizeMap.insert(make_pair(F, semeSize));
 		updateRegionFile(F, regionMap);
 	}
-
 
 	void ControlDependenceGraphs::storeRegion(Function* F, int semeId, 
 		std::map<BasicBlock*, std::set<BasicBlock*> > &regionMap) {
@@ -716,12 +715,10 @@ namespace llvm {
 		// return
 
 		bool parentRegion = false;
-		errs() << "SIZE" <<  ControlDependenceGraphBase::getFName(F) << " " << regionMap.size() << "\n";
 		for(std::map<BasicBlock*, std::set<BasicBlock*> >::iterator RItr = regionMap.begin();
 			RItr != regionMap.end(); RItr++) {
-			errs() << "Existing " << ControlDependenceGraphBase::getBBName(RItr->first) << "\n";
 			if (BBSEMESet.find(RItr->first) != BBSEMESet.end()) {
-				errs() << "Parent region \n";
+				errs() << "This is a parent region. \n";
 				parentRegion = true;
 				break;
 			}
@@ -731,12 +728,16 @@ namespace llvm {
 			return;
 		}
 
+		// Find all the region nodes and the head/tail BB of the region
+		
+		findRegionNodes(F, BBSEMESet);
+		
 		// Header BB
 		BasicBlock* head = IDToEntryMap[semeId];
 		for(std::set<BasicBlock*>::iterator SItr = BBSEMESet.begin();
 			SItr != BBSEMESet.end(); SItr++) {
 			BasicBlock* node = *SItr;
-			errs() <<  "region node " << ControlDependenceGraphBase::getBBName(node) << " ";	
+			
 			// Tail BBs for the region
 			for(succ_iterator SUItr = succ_begin(node); SUItr != succ_end(node);
 				SUItr++) {
@@ -746,10 +747,89 @@ namespace llvm {
 				}
 			}
 		}
-
 		regionMap.insert(make_pair(head, tailSet));
-		errs() << " updating file \n";
 	}
+
+	/*
+	 * Find all the basic blocks that belong to a region
+	 * (includes the ones the called functions)
+	 */
+	void ControlDependenceGraphs::findRegionNodes(Function* F,
+		std::set<BasicBlock*> BBSEMESet) {
+	
+		ofstream regionNodesFile;
+		regionNodesFile.open("regionNodes.txt", ios::app);
+
+		std::queue<Function *> funcQueue;
+		std::set<Function*> visitedFuncSet;
+	
+		// Add the current function
+		visitedFuncSet.insert(F);
+
+		for(std::set<BasicBlock*>::iterator BItr = BBSEMESet.begin();
+			BItr != BBSEMESet.end(); BItr++) {
+			BasicBlock* node = (*BItr);
+			
+			regionNodesFile << ControlDependenceGraphBase::getFName(F) << " " << 
+					ControlDependenceGraphBase::getBBName(node) << "\n";
+
+				
+			for(BasicBlock::iterator IItr = node->begin(); IItr != node->end();
+						IItr++) {
+				
+				Instruction *I = &(*IItr);
+				
+				if(!isa<CallInst>(I)) {
+					continue;
+				}
+				
+				CallInst* CI = dyn_cast<CallInst>(I);
+				Function* CF = CI->getCalledFunction();
+				
+				if(CF && !CF->isDeclaration()) {
+					if (visitedFuncSet.find(CF) == visitedFuncSet.end()) {
+						// Add the functions called by SEME BBs if not already
+						// in the queue
+						funcQueue.push(CF);
+						visitedFuncSet.insert(CF);
+					}
+				}
+			}
+		}
+
+		while(funcQueue.size() > 0) {
+			Function* curF = funcQueue.front();
+			funcQueue.pop();
+
+
+			for(Function::iterator BBItr = curF->begin(); BBItr != curF->end();
+				BBItr++) {
+
+				regionNodesFile << ControlDependenceGraphBase::getFName(curF) << " " << 
+					ControlDependenceGraphBase::getBBName(&(*BBItr)) << "\n";
+
+				for(BasicBlock::iterator IItr = (*BBItr).begin(); IItr != (*BBItr).end();
+					IItr++) {
+					Instruction *I = &(*IItr);
+					if (isa<CallInst>(I)) {
+						CallInst* CI = dyn_cast<CallInst>(I);
+						Function *CF = CI->getCalledFunction();
+						if (CF && !CF->isDeclaration()) {
+							if (visitedFuncSet.find(CF) == visitedFuncSet.end()) {
+								regionNodesFile << visitedFuncSet.size () << "\n";
+								// Prevents infinite loop due to recursion
+								funcQueue.push(CF);
+								visitedFuncSet.insert(CF);	
+							} 
+						}
+					}
+				}
+			}
+		}
+		regionNodesFile << endl;
+		regionNodesFile.close();
+	}
+
 
 	void ControlDependenceGraphs::updateRegionFile(Function *F,
 		std::map<BasicBlock*, std::set<BasicBlock*> > regionMap) {
@@ -759,8 +839,6 @@ namespace llvm {
 
 		ofstream regionFile;
 		regionFile.open("trace_file.txt", ios::app);
-
-		
 
 		std::map<BasicBlock*, std::set<BasicBlock*> >::iterator RItr;
 		for(RItr = regionMap.begin(); RItr != regionMap.end(); RItr++) {
@@ -778,32 +856,47 @@ namespace llvm {
 				foundTail = true;
 			}
 			if (!foundTail) {
-				//UnifyFunctionExitNodes* UEN;
-				/*UEN = &getAnalysis<UnifyFunctionExitNodes>(*F);
+				UnifyFunctionExitNodes* UEN;
+				UEN = &getAnalysis<UnifyFunctionExitNodes>(*F);
 				if(UEN != NULL && UEN->getReturnBlock() != NULL) {
 					BasicBlock *exit = UEN->getReturnBlock();
 					regionFile << "T " << ControlDependenceGraphBase::getFName(F) << " " <<
 					ControlDependenceGraphBase::getBBName(exit) << " ";
-				}*/
+				}
 			}
 			
 			regionFile << endl;
-
-
 		}
 	}
 	
 	/* 
  	 * Get the execution count of the entry basic block of the SEME 
  	 */ 
-	double ControlDependenceGraphs::getEntryExecCount(Function *F, BasicBlock* BB) {
+	double ControlDependenceGraphs::getEntryExecCount(Function *F, BasicBlock* BB,
+		std::set<ControlDependenceNode*> semeSet) {
+
 		double totalEdgeWeight = 0;
 
 		bool foundEdge = false;
+
+		std::set<BasicBlock*> BBSemeSet;
+		// Get a list of seme nodes in BB form
+		for(std::set<ControlDependenceNode*>::iterator SItr = semeSet.begin();
+			SItr != semeSet.end(); SItr++) {
+			if ((*SItr)->isRegion()) {
+				continue;
+			}
+			BasicBlock* node = (*SItr)->getBlock();
+			BBSemeSet.insert(node);
+		}
+
 		for(pred_iterator PItr = pred_begin(BB); PItr != pred_end(BB); PItr++) {
 			std::pair<const BasicBlock*, const BasicBlock*> tmpBackEdgeCheck(*PItr, BB);
 			if (CFGBackEdges.find(tmpBackEdgeCheck) == CFGBackEdges.end()) {
 				foundEdge = true;
+				totalEdgeWeight += PI->getEdgeWeight(PI->getEdge(*PItr, BB));
+			} else  if (BBSemeSet.find(*PItr) == BBSemeSet.end()) {
+				// The backedge should be from within the seme
 				totalEdgeWeight += PI->getEdgeWeight(PI->getEdge(*PItr, BB));
 			} else {
 				errs() << "Backedge between " << ControlDependenceGraphBase::getBBName(*PItr) 
@@ -827,7 +920,7 @@ namespace llvm {
 		double totalEdgeWeight = 0;
 
 		errs() << "BB exec count for " << 	
-						ControlDependenceGraphBase::getBBName(BB) << "\n";
+			ControlDependenceGraphBase::getBBName(BB) << "\n";
 		for(pred_iterator PItr = pred_begin(BB); PItr != pred_end(BB); PItr++) {
 	
 			if (entryBB == BB) {
@@ -886,7 +979,7 @@ namespace llvm {
 
 		std::map<BasicBlock*, double>::iterator BBSizeMapItr = BBSizeMap.find(BB);
 		if (BBSizeMapItr != BBSizeMap.end()) {
-			if (BBSizeMapItr->second == BIG_REGION) {
+			if (BBSizeMapItr->second >= REGION_THRES) {
 				existsTraceRegion = true;
 				return BBSizeMapItr->second;
 			}
@@ -918,6 +1011,7 @@ namespace llvm {
 			}
 
 			FuncSizeTy::iterator funcSizeItr = FuncSizeMap.find(CF);
+			errs() << " callee " << ControlDependenceGraphBase::getFName(CF).c_str() <<"\n";
 			if(funcSizeItr == FuncSizeMap.end()) {
 				errs() << " Callee function " << 
 					ControlDependenceGraphBase::getFName(CF).c_str() << 
@@ -927,18 +1021,11 @@ namespace llvm {
 			
 			if (funcSizeItr->second >= REGION_THRES) {
 				existsTraceRegion = true;
-			} else {
-				totalSize += funcSizeItr->second;	
-			}
-
+			} 
+			totalSize += funcSizeItr->second;	
 		}	
 		
-		if (existsTraceRegion) {
-			setBBSize(BB, BIG_REGION);
-		} else {
-			setBBSize(BB, totalSize);
-		}
-
+		setBBSize(BB, totalSize);
 		return totalSize;
 	}
 		
